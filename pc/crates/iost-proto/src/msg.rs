@@ -239,3 +239,52 @@ pub struct Resume {}
 pub fn is_original_family(ty: &str) -> bool {
     matches!(ty, "photo" | "video" | "audio" | "alternate_photo" | "paired_video")
 }
+
+// ---- VERIFY (PROTOCOL §6.4) ----
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VerifyMeta {
+    pub created_ms: i64,
+    pub fav: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loc: Option<Loc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VerifyRes {
+    pub key: String,
+    pub size: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VerifyAsset {
+    pub id: String,
+    pub meta: VerifyMeta,
+    pub res: Vec<VerifyRes>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Verify {
+    pub seq: u64,
+    pub assets: Vec<VerifyAsset>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BadAsset {
+    pub id: String,
+    pub why: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Verified {
+    pub seq: u64,
+    pub ok: Vec<String>,
+    pub bad: Vec<BadAsset>,
+}
+
+/// PROTOCOL §6.4: VERIFY frame limit.
+pub const MAX_VERIFY_ASSETS: usize = 1000;

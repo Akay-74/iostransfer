@@ -41,6 +41,8 @@ pub struct AssetRow {
     pub base_rel: String,
     pub modified_ms: Option<i64>,
     pub meta_json: Option<String>,
+    /// Which meta the durable `<base>.xmp` holds, if one was written.
+    pub xmp_meta_hash: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -131,9 +133,9 @@ impl Index {
     pub fn asset(&self, dev: &str, id: &str) -> rusqlite::Result<Option<AssetRow>> {
         self.conn
             .query_row(
-                "SELECT base_rel, modified_ms, meta_json FROM assets WHERE device_id = ?1 AND asset_id = ?2",
+                "SELECT base_rel, modified_ms, meta_json, xmp_meta_hash FROM assets WHERE device_id = ?1 AND asset_id = ?2",
                 params![dev, id],
-                |r| Ok(AssetRow { base_rel: r.get(0)?, modified_ms: r.get(1)?, meta_json: r.get(2)? }),
+                |r| Ok(AssetRow { base_rel: r.get(0)?, modified_ms: r.get(1)?, meta_json: r.get(2)?, xmp_meta_hash: r.get(3)? }),
             )
             .optional()
     }
@@ -174,6 +176,22 @@ impl Index {
         self.conn.execute(
             "UPDATE assets SET modified_ms = ?3, meta_json = ?4 WHERE device_id = ?1 AND asset_id = ?2",
             params![dev, id, modified_ms, meta_json],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_meta(&self, dev: &str, id: &str, meta_json: &str) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE assets SET meta_json = ?3 WHERE device_id = ?1 AND asset_id = ?2",
+            params![dev, id, meta_json],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_xmp_hash(&self, dev: &str, id: &str, hash: &str) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE assets SET xmp_meta_hash = ?3 WHERE device_id = ?1 AND asset_id = ?2",
+            params![dev, id, hash],
         )?;
         Ok(())
     }

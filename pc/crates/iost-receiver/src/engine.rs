@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use iost_proto::msg::{
-    is_original_family, Ack, Asset, AssetEnd, Bye, FailedKey, Job, Manifest, Need, NeedMore, ResAbort, ResBegin, ResEnd,
-    ResNack, ResOffset, Want,
+    is_original_family, Ack, Asset, AssetEnd, BadAsset, Bye, FailedKey, Job, Manifest, Need, NeedMore, Pause, ResAbort,
+    ResBegin, ResEnd, ResNack, ResOffset, Resume, Verified, Verify, Want, MAX_VERIFY_ASSETS,
 };
 use iost_proto::{DataChunk, Frame, FrameType};
 use serde::de::DeserializeOwned;
@@ -21,11 +21,19 @@ use tracing::{info, warn};
 
 use crate::handshake::Ctx;
 use crate::index::{ResRow, ResState};
+use crate::xmp::{self, Meta};
 use crate::{crash, fsio, lock, naming};
 
 /// PROTOCOL §6.1.
 const MAX_PAGE_ASSETS: usize = 500;
 const WRITE_BUFFER: usize = 1 << 20;
+
+/// Input from the session task.
+pub enum In {
+    Frame(Frame),
+    /// Periodic wake-up (free-space re-check while PAUSEd for disk_low).
+    Tick,
+}
 
 /// What the engine asks the session task to do.
 pub enum Out {
@@ -81,6 +89,8 @@ struct Wanted {
 
 struct JobState {
     job: Job,
+    /// Move jobs (and `--xmp`) keep an XMP sidecar per asset.
+    xmp: bool,
     next_page: u32,
     seen: HashSet<String>,
     wanted: HashMap<String, Wanted>,
@@ -94,6 +104,9 @@ pub struct Engine {
     job: Option<JobState>,
     slots: HashMap<u16, Slot>,
     attempts: HashMap<(String, String), u32>,
+    /// Bytes we couldn't accept for lack of space; Some while PAUSEd{disk_low}.
+    disk_paused: Option<u64>,
+    slow_writer_done: bool,
 }
 
 struct NeedResult {
@@ -111,7 +124,7 @@ fn len_of(p: &Path) -> Option<u64> {
 }
 
 fn meta_json(a: &Asset) -> String {
-    serde_json::json!({ "created_ms": a.created_ms, "tz_min": a.tz_min, "fav": a.fav, "loc": a.loc }).to_string()
+    Meta::of(a).to_json()
 }
 
 /// Lower-case names in `dir`, for case-insensitive collision checks (NTFS, exFAT).
@@ -123,14 +136,31 @@ fn names_in(dir: &Path) -> HashSet<String> {
 
 impl Engine {
     pub fn new(ctx: Arc<Ctx>, dev: String, dev_name: String, out: mpsc::UnboundedSender<Out>) -> Self {
-        Engine { ctx, dev, dev_name, out, job: None, slots: HashMap::new(), attempts: HashMap::new() }
+        Engine {
+            ctx,
+            dev,
+            dev_name,
+            out,
+            job: None,
+            slots: HashMap::new(),
+            attempts: HashMap::new(),
+            disk_paused: None,
+            slow_writer_done: false,
+        }
     }
 
     /// Process frames until the queue closes or a fatal error, then make every open `.part`
     /// durable at its exact length.
-    pub fn run(mut self, mut rx: mpsc::Receiver<Frame>) {
-        while let Some(f) = rx.blocking_recv() {
-            if let Err(e) = self.handle(f) {
+    pub fn run(mut self, mut rx: mpsc::Receiver<In>) {
+        while let Some(input) = rx.blocking_recv() {
+            let result = match input {
+                In::Frame(f) => self.handle(f),
+                In::Tick => {
+                    self.tick();
+                    Ok(())
+                }
+            };
+            if let Err(e) = result {
                 let code = if matches!(e, Fatal::Protocol(_)) { "protocol_error" } else { "shutting_down" };
                 warn!(device = %self.dev_name, "{e}");
                 self.send(FrameType::Bye, &Bye { msg: Some(e.to_string()), ..Bye::code(code) });
@@ -173,6 +203,7 @@ impl Engine {
             FrameType::ResEnd => self.res_end(parse(&f)?),
             FrameType::ResAbort => self.res_abort(parse(&f)?),
             FrameType::AssetEnd => self.asset_end(parse(&f)?),
+            FrameType::Verify => self.verify(parse(&f)?),
             other => protocol(format!("{other:?} is not allowed in the ready phase")),
         }
     }
@@ -187,7 +218,8 @@ impl Engine {
             if m.page != 0 {
                 return protocol("a new job must start at page 0");
             }
-            self.job = Some(JobState { job: m.job.clone(), next_page: 0, seen: HashSet::new(), wanted: HashMap::new() });
+            let xmp = m.job.is_move() || self.ctx.limits.xmp_always;
+            self.job = Some(JobState { job: m.job.clone(), xmp, next_page: 0, seen: HashSet::new(), wanted: HashMap::new() });
         }
         let job = self.job.as_mut().unwrap();
         if m.page != job.next_page {
@@ -206,8 +238,9 @@ impl Engine {
 
         let mut need = Need { job_id: m.job.job_id.clone(), page: m.page, want: vec![], have: vec![] };
         let mut wanted = vec![];
+        let xmp = self.job.as_ref().is_some_and(|j| j.xmp);
         for a in m.assets {
-            let r = self.compute_need(&a)?;
+            let r = self.compute_need(&a, xmp)?;
             if r.want.is_empty() {
                 need.have.push(a.id.clone());
             } else {
@@ -231,7 +264,7 @@ impl Engine {
         Ok(())
     }
 
-    fn compute_need(&self, a: &Asset) -> Result<NeedResult, Fatal> {
+    fn compute_need(&self, a: &Asset, xmp: bool) -> Result<NeedResult, Fatal> {
         let ix = lock(&self.ctx.index);
         let arow = ix.asset(&self.dev, &a.id)?;
         let rows: HashMap<String, ResRow> =
@@ -282,8 +315,14 @@ impl Engine {
             }
         }
 
-        if out.want.is_empty() && arow.is_some() {
+        if let (true, Some(arow)) = (out.want.is_empty(), &arow) {
+            // `have`: store the current meta, and make the sidecar durable before NEED (§6.3 meta refresh).
             ix.set_asset_acked(&self.dev, &a.id, a.modified_ms, &meta_json(a))?;
+            let meta = Meta::of(a);
+            if (xmp || arow.xmp_meta_hash.is_some()) && arow.xmp_meta_hash.as_deref() != Some(&meta.xmp_hash()) {
+                xmp::write(&self.ctx.dest, &arow.base_rel, &meta)?;
+                ix.set_xmp_hash(&self.dev, &a.id, &meta.xmp_hash())?;
+            }
         }
         Ok(out)
     }
@@ -311,8 +350,13 @@ impl Engine {
             return self.nack(Some(b.slot), &b.id, &b.key, "bad_offset", true);
         }
         if (self.ctx.free_bytes)() < self.ctx.limits.reserve_bytes.saturating_add(b.size - b.offset) {
-            // Checked before any .part exists (N9).
-            return self.nack(Some(b.slot), &b.id, &b.key, "disk_full", false);
+            // Checked before any .part exists (N9). The sender waits for RESUME before retrying.
+            self.nack(Some(b.slot), &b.id, &b.key, "disk_full", false)?;
+            if self.disk_paused.is_none() {
+                self.send(FrameType::Pause, &Pause { why: "disk_low".into() });
+            }
+            self.disk_paused = Some(b.size - b.offset);
+            return Ok(());
         }
 
         let dest = self.ctx.dest.clone();
@@ -433,6 +477,10 @@ impl Engine {
         crash::at_bytes(before, w.written, &w.key);
         if w.written >= w.durable + checkpoint {
             w.file.flush()?;
+            if let (Some(d), false) = (self.ctx.limits.test_slow_writer, self.slow_writer_done) {
+                self.slow_writer_done = true;
+                std::thread::sleep(d);
+            }
             w.file.get_ref().sync_all()?;
             lock(&self.ctx.index).set_durable(&self.dev, &w.id, &w.key, w.written)?;
             w.durable = w.written;
@@ -573,8 +621,16 @@ impl Engine {
                 failed.push(FailedKey { key: key.clone(), why });
             }
         }
+        let xmp_needed = self.job.as_ref().is_some_and(|j| j.xmp);
+        let Some(w) = self.job.as_mut().and_then(|j| j.wanted.get_mut(&e.id)) else { unreachable!() };
         let ack = if e.complete && failed.is_empty() {
             ix.set_asset_acked(&self.dev, &e.id, w.asset.modified_ms, &meta_json(&w.asset))?;
+            if xmp_needed {
+                let meta = Meta::of(&w.asset);
+                let base = ix.asset(&self.dev, &e.id)?.map(|a| a.base_rel).expect("done resources imply an asset row");
+                xmp::write(&self.ctx.dest, &base, &meta)?;
+                ix.set_xmp_hash(&self.dev, &e.id, &meta.xmp_hash())?;
+            }
             crash::at("P5", "");
             Ack { id: e.id.clone(), status: "durable".into(), failed: None }
         } else {
@@ -584,5 +640,94 @@ impl Engine {
         w.acked = true;
         self.send(FrameType::Ack, &ack);
         Ok(())
+    }
+}
+
+impl Engine {
+    /// Free-space re-check while PAUSEd for disk_low.
+    fn tick(&mut self) {
+        if let Some(needed) = self.disk_paused
+            && (self.ctx.free_bytes)() >= self.ctx.limits.reserve_bytes.saturating_add(needed) {
+                self.disk_paused = None;
+                self.send(FrameType::Resume, &Resume {});
+            }
+    }
+
+    // ---- VERIFY → VERIFIED (§6.4, move only) ----
+
+    fn verify(&mut self, v: Verify) -> Result<(), Fatal> {
+        if v.assets.len() > MAX_VERIFY_ASSETS {
+            return protocol("more than 1000 assets in VERIFY");
+        }
+        if !self.job.as_ref().is_some_and(|j| j.job.is_move()) {
+            return protocol("VERIFY outside a move job");
+        }
+        let ix = lock(&self.ctx.index);
+        let (mut ok, mut bad) = (vec![], vec![]);
+        for a in v.assets {
+            let Some(arow) = ix.asset(&self.dev, &a.id)? else {
+                bad.push(BadAsset { id: a.id, why: "unknown_asset".into(), key: None });
+                continue;
+            };
+            // Meta refresh first: VERIFY never says ok while the current meta isn't durable (Δ18).
+            let stored = arow.meta_json.as_deref().and_then(Meta::from_json);
+            let tz_min = stored.as_ref().map_or(0, |m| m.tz_min);
+            let meta = Meta { created_ms: a.meta.created_ms, tz_min, fav: a.meta.fav, loc: a.meta.loc.clone() };
+            if stored.as_ref().map(Meta::key) != Some(meta.key()) {
+                ix.set_meta(&self.dev, &a.id, &meta.to_json())?;
+            }
+            if arow.xmp_meta_hash.as_deref() != Some(&meta.xmp_hash()) {
+                xmp::write(&self.ctx.dest, &arow.base_rel, &meta)?;
+                ix.set_xmp_hash(&self.dev, &a.id, &meta.xmp_hash())?;
+            }
+            match self.check_resources(&ix, &a.id, &a.res)? {
+                None => ok.push(a.id),
+                Some((why, key)) => bad.push(BadAsset { id: a.id, why: why.into(), key: Some(key) }),
+            }
+        }
+        drop(ix);
+        self.send(FrameType::Verified, &Verified { seq: v.seq, ok, bad });
+        Ok(())
+    }
+
+    /// First failing resource of an asset, if any.
+    fn check_resources(
+        &self,
+        ix: &crate::index::Index,
+        id: &str,
+        res: &[iost_proto::msg::VerifyRes],
+    ) -> Result<Option<(&'static str, String)>, Fatal> {
+        for r in res {
+            let row = match ix.resource(&self.dev, id, &r.key)? {
+                Some(row) if row.state == ResState::Done => row,
+                _ => return Ok(Some(("missing_resource", r.key.clone()))),
+            };
+            let path = fsio::resolve(&self.ctx.dest, &row.rel_path)?;
+            let Some(on_disk) = len_of(&path) else { return Ok(Some(("file_missing", r.key.clone()))) };
+            if on_disk != row.size || r.size != row.size {
+                return Ok(Some(("size_mismatch", r.key.clone())));
+            }
+            let stored = row.sha256.clone().unwrap_or_default();
+            if r.sha256.as_ref().is_some_and(|h| hex::decode(h).ok().as_deref() != Some(stored.as_slice())) {
+                return Ok(Some(("hash_mismatch", r.key.clone())));
+            }
+            if self.ctx.limits.paranoid && hash_file(&path)? != stored {
+                return Ok(Some(("hash_mismatch", r.key.clone())));
+            }
+        }
+        Ok(None)
+    }
+}
+
+fn hash_file(path: &Path) -> io::Result<Vec<u8>> {
+    let mut f = File::open(path)?;
+    let mut h = Sha256::new();
+    let mut buf = vec![0u8; WRITE_BUFFER];
+    loop {
+        let n = f.read(&mut buf)?;
+        if n == 0 {
+            return Ok(h.finalize().to_vec());
+        }
+        h.update(&buf[..n]);
     }
 }

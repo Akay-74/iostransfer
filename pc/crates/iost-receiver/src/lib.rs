@@ -13,6 +13,7 @@ pub mod server;
 pub mod session;
 pub mod text;
 pub mod tls;
+pub mod xmp;
 
 pub use devices::DeviceDb;
 pub use handshake::{handshake, Ctx, DeviceSessions, Established, HandshakeError, Limits, PairRequest};
