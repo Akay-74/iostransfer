@@ -76,3 +76,23 @@ let C = "Recents"
     s.add(.all(collection: C))
     #expect(s.count(in: C, Empty()) == 0 && s.resolve(in: C, Empty()).isEmpty)
 }
+
+/// Counts lookups of the id → index map, to prove ranges don't need it.
+final class Counting: AssetIndex {
+    let base = Fake()
+    var lookups = 0
+    var count: Int { base.count }
+    func id(at i: Int) -> String { base.id(at: i) }
+    func index(of id: String) -> Int? { lookups += 1; return base.index(of: id) }
+    func createdMs(at i: Int) -> Int64 { base.createdMs(at: i) }
+}
+
+@Test func rangesUseIndexHintsNotLookups() {
+    let idx = Counting()
+    var s = Selection()
+    s.applyRange(from: 10, to: 90, in: C, idx)
+    idx.lookups = 0
+    for i in 0..<100 { _ = s.contains(i, in: C, idx) }
+    #expect(s.count(in: C, idx) == 81)
+    #expect(idx.lookups == 0)
+}

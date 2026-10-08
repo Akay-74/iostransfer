@@ -32,9 +32,13 @@ public enum SelectionRule: Codable, Equatable, Hashable, Sendable {
 public struct Boundary: Codable, Equatable, Hashable, Sendable {
     public var id: AssetID
     public var createdMs: Int64
-    public init(id: AssetID, createdMs: Int64) {
+    /// Where the asset was when selected: checked in O(1) before falling back to a lookup, so
+    /// grid highlighting never needs an id → index map of a 50k library.
+    public var indexHint: Int?
+    public init(id: AssetID, createdMs: Int64, indexHint: Int? = nil) {
         self.id = id
         self.createdMs = createdMs
+        self.indexHint = indexHint
     }
 }
 
@@ -67,6 +71,7 @@ public struct Selection: Codable, Equatable, Sendable {
 
     /// A boundary's index; if the asset vanished, the neighbours its date falls between.
     private static func locate(_ b: Boundary, _ idx: AssetIndex) -> (low: Int, high: Int) {
+        if let h = b.indexHint, h >= 0, h < idx.count, idx.id(at: h) == b.id { return (h, h) }
         if let i = idx.index(of: b.id) { return (i, i) }
         let i = firstIndex(atOrAfter: b.createdMs, idx)
         return (min(i, idx.count - 1), max(i - 1, 0))
@@ -148,8 +153,8 @@ public struct Selection: Codable, Equatable, Sendable {
     /// Range mode: select [a, b]; if the start was already selected, deselect the range instead.
     public mutating func applyRange(from a: Int, to b: Int, in collection: String, _ idx: AssetIndex) {
         let lo = min(a, b), hi = max(a, b)
-        let ba = Boundary(id: idx.id(at: lo), createdMs: idx.createdMs(at: lo))
-        let bb = Boundary(id: idx.id(at: hi), createdMs: idx.createdMs(at: hi))
+        let ba = Boundary(id: idx.id(at: lo), createdMs: idx.createdMs(at: lo), indexHint: lo)
+        let bb = Boundary(id: idx.id(at: hi), createdMs: idx.createdMs(at: hi), indexHint: hi)
         if contains(a, in: collection, idx) {
             for i in lo...hi { excluded.insert(idx.id(at: i)) }
         } else {

@@ -48,6 +48,7 @@ final class SessionDriver {
     private var lastFreeCheck = Date.distantPast
     private let started = DispatchTime.now().uptimeNanoseconds
     private var bgTask: UIBackgroundTaskIdentifier = .invalid
+    private var observers: [NSObjectProtocol] = []
 
     init?(purpose: Purpose, model: TransferModel) {
         self.purpose = purpose
@@ -99,12 +100,12 @@ final class SessionDriver {
             model?.running = true
             if Store.shared.backgroundKeepAlive, case .transfer = purpose { KeepAlive.shared.start() }
         }
-        NotificationCenter.default.addObserver(forName: ProcessInfo.thermalStateDidChangeNotification, object: nil, queue: nil) { [weak self] _ in
+        observers.append(NotificationCenter.default.addObserver(forName: ProcessInfo.thermalStateDidChangeNotification, object: nil, queue: nil) { [weak self] _ in
             self?.post { .thermal(Self.thermal(), now: $0) }
-        }
-        NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+        })
+        observers.append(NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
             self?.beginBackgroundTime()
-        }
+        })
         q.async { [self] in
             handle(.startJob(spec, now: now))
             handle(.thermal(Self.thermal(), now: now))
@@ -122,6 +123,8 @@ final class SessionDriver {
     }
 
     private func stop() {
+        observers.forEach(NotificationCenter.default.removeObserver)
+        observers = []
         timer?.cancel()
         timer = nil
         transport.stopBrowsing()

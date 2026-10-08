@@ -49,6 +49,7 @@ final class GridController: UICollectionViewController {
     private let index: FetchIndex
     private let images = PHCachingImageManager()
     private var cellSize = CGSize(width: 90, height: 90)
+    private var didInitialScroll = false
     var isSelected: (Int, FetchIndex) -> Bool = { _, _ in false }
     var onTap: (Int, FetchIndex) -> Void = { _, _ in }
     var rangeStart: Int?
@@ -76,8 +77,9 @@ final class GridController: UICollectionViewController {
         let w = (collectionView.bounds.width - 6) / 4
         cellSize = CGSize(width: w, height: w)
         (collectionViewLayout as? UICollectionViewFlowLayout)?.itemSize = cellSize
-        if fetch.count > 0, collectionView.contentOffset == .zero {
-            // Newest at the bottom, like Photos.
+        if fetch.count > 0, !didInitialScroll {
+            didInitialScroll = true
+            // Newest at the bottom, like Photos (once; later layouts must not move the user).
             collectionView.scrollToItem(at: IndexPath(item: fetch.count - 1, section: 0), at: .bottom, animated: false)
         }
     }

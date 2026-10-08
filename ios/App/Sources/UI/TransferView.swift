@@ -40,7 +40,7 @@ struct TransferView: View {
 
     private var intro: some View {
         VStack(spacing: 16) {
-            Text("\(library.count(request.section)) items to \(request.mode == .move ? "move" : "copy") to \(library.pc?.name ?? "your PC").")
+            Text("\(request.count) items to \(request.mode == .move ? "move" : "copy") to \(library.pc?.name ?? "your PC").")
                 .font(.headline).multilineTextAlignment(.center)
             if request.mode == .move {
                 Text("Each item is deleted from this iPhone only after the PC has verified its copy. iOS asks you to confirm the delete. Deleted items stay in Recently Deleted for 30 days.")

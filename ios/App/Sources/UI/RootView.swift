@@ -38,10 +38,27 @@ final class LibraryModel: ObservableObject {
         }
     }
 
-    /// Selected count across a section's collections.
-    func count(_ s: MediaSection) -> Int {
+    /// Selected counts, computed off the main thread: some rules over a large library need an
+    /// id → index map.
+    @Published var counts: [MediaSection: Int] = [:]
+    @Published var collectionCounts: [MediaSection: [String: Int]] = [:]
+    private var countTask: [MediaSection: Task<Void, Never>] = [:]
+
+    func recount(_ s: MediaSection) {
         let sel = selection(s)
-        return sel.collections.reduce(0) { $0 + sel.count(in: $1, FetchIndex(PhotoLibrary.fetch($1, s))) }
+        countTask[s]?.cancel()
+        countTask[s] = Task.detached(priority: .userInitiated) {
+            var per: [String: Int] = [:]
+            for c in sel.collections {
+                if Task.isCancelled { return }
+                per[c] = sel.count(in: c, FetchIndex(PhotoLibrary.fetch(c, s)))
+            }
+            let total = per.values.reduce(0, +)
+            await MainActor.run {
+                self.counts[s] = total
+                self.collectionCounts[s] = per
+            }
+        }
     }
 
     func setPC(_ pc: PairedPC?) {

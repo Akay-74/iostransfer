@@ -6,6 +6,7 @@ struct JobRequest: Identifiable {
     let id = UUID()
     let section: MediaSection
     let mode: JobMode
+    let count: Int
 }
 
 struct HomeView: View {
@@ -13,7 +14,7 @@ struct HomeView: View {
     @State private var section: MediaSection = .photos
     @State private var job: JobRequest?
     @State private var settings = false
-    @State private var selectedCount = 0
+    private var selectedCount: Int { library.counts[section] ?? 0 }
 
     var body: some View {
         NavigationStack {
@@ -41,9 +42,9 @@ struct HomeView: View {
                 HStack {
                     Text(selectedCount == 0 ? "Nothing selected" : "\(selectedCount) selected")
                     Spacer()
-                    Button("Copy") { job = JobRequest(section: section, mode: .copy) }
+                    Button("Copy") { job = JobRequest(section: section, mode: .copy, count: selectedCount) }
                         .buttonStyle(.borderedProminent).disabled(selectedCount == 0)
-                    Button("Move") { job = JobRequest(section: section, mode: .move) }
+                    Button("Move") { job = JobRequest(section: section, mode: .move, count: selectedCount) }
                         .buttonStyle(.bordered).disabled(selectedCount == 0 || !PhotoLibrary.authorized)
                 }
                 .padding().background(.bar)
@@ -57,13 +58,11 @@ struct HomeView: View {
     }
 
     private func selectedIn(_ c: CollectionInfo) -> Int {
-        let sel = library.selection(section)
-        guard sel.collections.contains(c.id) else { return 0 }
-        return sel.count(in: c.id, FetchIndex(PhotoLibrary.fetch(c.id, section)))
+        library.collectionCounts[section]?[c.id] ?? 0
     }
 
     private func recount() {
-        selectedCount = library.count(section)
+        library.recount(section)
     }
 }
 
