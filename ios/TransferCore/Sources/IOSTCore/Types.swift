@@ -137,7 +137,7 @@ public enum TransportDownReason: Sendable, Equatable {
     case error(String)
 }
 
-public enum ExportFailure: String, Sendable {
+public enum ExportFailure: String, Error, Sendable {
     case notLocal = "not_local"
     case readError = "read_error"
     case noSpace = "spool_space"

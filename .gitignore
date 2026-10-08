@@ -1,3 +1,7 @@
 pc/target/
 ios/TransferCore/.build/
 .swiftpm/
+ios/App/IOStransfer.xcodeproj/
+ios/App/build/
+ios/App/Payload/
+ios/App/*.ipa

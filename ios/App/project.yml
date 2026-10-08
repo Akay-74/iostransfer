@@ -1,0 +1,44 @@
+# XcodeGen spec: CI generates IOStransfer.xcodeproj from this (never hand-edit a .pbxproj on Linux).
+name: IOStransfer
+options:
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+packages:
+  TransferCore:
+    path: ../TransferCore
+targets:
+  IOStransfer:
+    type: application
+    platform: iOS
+    scheme: {}
+    sources: [Sources]
+    dependencies:
+      - package: TransferCore
+        product: IOSTCore
+      - package: TransferCore
+        product: IOSTSelection
+    info:
+      path: Sources/Info.plist
+      properties:
+        CFBundleDisplayName: IOStransfer
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        NSPhotoLibraryUsageDescription: IOStransfer copies the photos and videos you choose to your PC, and deletes them from this iPhone only when you choose Move.
+        NSCameraUsageDescription: The camera scans the pairing QR code your PC shows.
+        NSLocalNetworkUsageDescription: IOStransfer finds your PC on this Wi‑Fi network and sends photos to it.
+        NSBonjourServices: [_iostransfer._tcp]
+        UIBackgroundModes: [audio]
+        ITSAppUsesNonExemptEncryption: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.akay74.iostransfer
+        PRODUCT_NAME: IOStransfer
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1"
+        ENABLE_BITCODE: NO
+        GENERATE_INFOPLIST_FILE: NO
+        DEVELOPMENT_TEAM: ""
+        CODE_SIGN_STYLE: Manual
