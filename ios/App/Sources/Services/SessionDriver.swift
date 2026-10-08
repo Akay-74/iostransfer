@@ -204,7 +204,7 @@ final class SessionDriver {
             }
             handle(.secretStored(now: now))
             // PAIRED is sent: pairing is complete. The PC's `pair` command exits now.
-            let pc = PairedPC(pcID: pcID, name: pcName, hosts: info.hosts, port: info.port, pin: info.pin)
+            let pc = PairedPC(pcID: pcID, name: pcName, hosts: info.hosts, port: info.receivePort, pin: info.pin)
             handle(.cancelJob(now: now))
             stop()
             ui { $0.pairingDone = pc }

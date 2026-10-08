@@ -279,7 +279,8 @@ This section records only the architectural decisions and why they were made.
 - PC advertises `_iostransfer._tcp` (Rust `mdns-sd`, pure Rust, no Apple Bonjour needed on Windows). TXT `pcid`, `v`.
 - iOS Info.plist: `NSLocalNetworkUsageDescription`, `NSBonjourServices = [_iostransfer._tcp]`, `NSCameraUsageDescription`.
 - `iostransfer pair` prints a QR code (and saves a PNG):
-  `iost://pair?pcid=<uuid>&h=<ip1,ip2>&p=47800&spki=<base64url, no padding, 43 chars>&t=<one-time token>&n=<pc name>`.
+  `iost://pair?pcid=<uuid>&h=<ip1,ip2>&p=<pairing port>&rp=<receive port, default 47800>&spki=<base64url, no padding, 43 chars>&t=<one-time token>&n=<pc name>`.
+  `p` is the `iostransfer pair` session (any free port, so pairing works while `receive` runs); the phone stores `rp` for every later transfer.
   The QR is only ever read by the app's own scanner. The app does **not** register an `iost://` URL scheme
   (THREAT_MODEL N10), otherwise any web page or message could trigger pairing with an attacker's PC.
 - **Pairing confirmation (N11):** both screens show a pairing code (first 40 bits of the SPKI pin, Crockford
