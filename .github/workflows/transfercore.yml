@@ -1,0 +1,29 @@
+# TransferCore (Swift): build and test on Linux, the same way it runs locally.
+# Image and actions are pinned by digest/SHA (THREAT_MODEL N18).
+name: transfercore
+
+on:
+  push:
+    branches: [main]
+    paths: ["ios/TransferCore/**", "testdata/**", ".github/workflows/transfercore.yml"]
+  pull_request:
+    paths: ["ios/TransferCore/**", "testdata/**", ".github/workflows/transfercore.yml"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: transfercore-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    container: swift:6.4-noble@sha256:31d14d727f4451f25e29bac9c42563a098c39ac66415e8bad970f48038e38aca
+    defaults:
+      run:
+        working-directory: ios/TransferCore
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Test
+        run: swift test

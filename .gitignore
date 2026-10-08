@@ -1,1 +1,3 @@
 pc/target/
+ios/TransferCore/.build/
+.swiftpm/
