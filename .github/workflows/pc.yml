@@ -1,0 +1,51 @@
+# PC receiver: lint, test and build on Linux and Windows.
+# Actions are pinned to commit SHAs (THREAT_MODEL N18); the comment names the tag.
+name: pc
+
+on:
+  push:
+    branches: [main]
+    paths: ["pc/**", "testdata/**", ".github/workflows/pc.yml"]
+  pull_request:
+    paths: ["pc/**", "testdata/**", ".github/workflows/pc.yml"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pc-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: pc
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          toolchain: stable
+          components: clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: pc
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Test
+        run: cargo test --locked
+      - name: Build release
+        run: cargo build --release --locked -p iostransfer
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: iostransfer-${{ runner.os }}
+          path: |
+            pc/target/release/iostransfer
+            pc/target/release/iostransfer.exe
+          if-no-files-found: error

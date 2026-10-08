@@ -137,17 +137,17 @@ fn private_file(path: &Path) -> Result<()> {
 /// The destination may be exFAT/NTFS/SMB, where modes don't stick. It holds no secrets (N16a),
 /// so owner-only is best effort there.
 fn best_effort_private(path: &Path) {
-    if !path.exists() && write_owner_only(path, b"").is_err() {
-        return;
-    }
+    let exists = path.exists() || write_owner_only(path, b"").is_ok();
     #[cfg(unix)]
-    {
+    if exists {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
         if check_owner_only(path).is_err() {
             tracing::warn!("{} can't be made owner-only on this filesystem (fine: it holds no secrets)", path.display());
         }
     }
+    #[cfg(not(unix))]
+    let _ = exists;
 }
 
 fn open_devices(config: &Path) -> Result<DeviceDb> {

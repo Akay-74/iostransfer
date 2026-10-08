@@ -477,7 +477,7 @@ impl Engine {
             && !wanted.provisional.is_empty()
         {
             // The edit really changed: request the renders answered as provisional `have` (§6.1).
-            let keys: Vec<String> = wanted.provisional.drain(..).collect();
+            let keys = std::mem::take(&mut wanted.provisional);
             for k in &keys {
                 wanted.keys.insert(k.clone(), 0);
                 wanted.more_pending.insert(k.clone());
