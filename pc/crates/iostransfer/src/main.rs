@@ -43,6 +43,9 @@ enum Cmd {
         /// Port for this pairing session (default: any free port; the QR carries it)
         #[arg(long, default_value_t = 0)]
         port: u16,
+        /// Port `iostransfer receive` listens on; the iPhone uses it for every transfer after pairing
+        #[arg(long, default_value_t = DEFAULT_PORT)]
+        receive_port: u16,
     },
     /// Receive from paired iPhones
     Receive {
@@ -123,7 +126,7 @@ async fn main() -> Result<()> {
     };
     create_private_dir(&config)?;
     match cli.cmd {
-        Cmd::Pair { dest, port } => pair(&config, &dest, port).await,
+        Cmd::Pair { dest, port, receive_port } => pair(&config, &dest, port, receive_port).await,
         Cmd::Receive {
             dest,
             port,
@@ -314,7 +317,7 @@ fn stdin_lines() -> Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<String>>> {
     Arc::new(tokio::sync::Mutex::new(rx))
 }
 
-async fn pair(config: &Path, dest: &Path, port: u16) -> Result<()> {
+async fn pair(config: &Path, dest: &Path, port: u16, receive_port: u16) -> Result<()> {
     let id = Identity::load_or_create(config)?;
     let code = id.pairing_code();
     let lines = stdin_lines();
@@ -346,7 +349,7 @@ async fn pair(config: &Path, dest: &Path, port: u16) -> Result<()> {
     let token = ctx.new_token();
     let hosts = ips.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
     let url = format!(
-        "iost://pair?pcid={}&h={hosts}&p={port}&spki={}&t={token}&n={}",
+        "iost://pair?pcid={}&h={hosts}&p={port}&rp={receive_port}&spki={}&t={token}&n={}",
         ctx.pc_id,
         id.pin_b64url(),
         percent_encode(&ctx.pc_name)

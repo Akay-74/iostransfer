@@ -89,7 +89,7 @@ Then **Copy** or **Move**. Keep the screen open while it runs (or enable the exp
 |---|---|
 | `--xmp` | Also write `<name>.xmp` sidecars (date, location, favourite) for copies. Moves always do: they preserve "Adjust Date & Location" edits, which live only in the Photos database |
 | `--paranoid` | Before the phone deletes anything, re-hash every file on the PC (slower; catches disk corruption) |
-| `--port N` | Listen on another port (default 47800) |
+| `--port N` | Listen on another port (default 47800). If you change it, pair with `iostransfer pair --receive-port N` so the iPhone knows |
 
 `iostransfer devices list` / `iostransfer devices revoke <id>` manage paired iPhones.
 

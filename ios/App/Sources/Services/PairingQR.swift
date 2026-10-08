@@ -6,7 +6,10 @@ import IOSTCore
 struct PairingInfo: Equatable {
     var pcID: String
     var hosts: [String]
+    /// Port of this pairing session (`iostransfer pair`, often ephemeral).
     var port: UInt16
+    /// Port `iostransfer receive` listens on: used for every transfer after pairing.
+    var receivePort: UInt16
     /// SHA-256 of the PC's SPKI.
     var pin: [UInt8]
     var token: String
@@ -25,10 +28,11 @@ struct PairingInfo: Equatable {
               let spki = v("spki"), spki.count == 43, let pin = IOSTCrypto.fromBase64url(spki), pin.count == 32,
               let token = v("t"), token.count == 32, token.allSatisfy({ $0.isHexDigit && !$0.isUppercase })
         else { return nil }
+        let receivePort = v("rp").flatMap(UInt16.init).flatMap { $0 > 0 ? $0 : nil } ?? 47800
         let hosts = hostList.split(separator: ",").map(String.init).filter(isIPv4)
         guard !hosts.isEmpty, hosts.count <= 8 else { return nil }
         let name = String((v("n") ?? "PC").filter { !$0.isNewline && $0.unicodeScalars.allSatisfy { !CharacterSet.controlCharacters.contains($0) } }.prefix(100))
-        return PairingInfo(pcID: pcid.lowercased(), hosts: hosts, port: port, pin: pin, token: token, pcName: name,
+        return PairingInfo(pcID: pcid.lowercased(), hosts: hosts, port: port, receivePort: receivePort, pin: pin, token: token, pcName: name,
                            hasPublicHost: hosts.contains { !isPrivate($0) })
     }
 
