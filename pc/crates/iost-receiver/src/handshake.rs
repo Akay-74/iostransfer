@@ -38,6 +38,18 @@ pub struct Limits {
     pub reserve_bytes: u64,
     /// No inbound frame for this long means the phone is gone (PROTOCOL §6.5).
     pub peer_silence: Duration,
+    /// Send a PING after this long without outbound frames (PROTOCOL §6.5).
+    pub ping_after: Duration,
+    /// Writer blocked this long → PAUSE{disk_slow} (PROTOCOL Δ15).
+    pub disk_slow_after: Duration,
+    /// Free-space re-check interval while PAUSEd for disk_low.
+    pub free_poll: Duration,
+    /// Write XMP sidecars in copy jobs too (`--xmp`); move jobs always write them.
+    pub xmp_always: bool,
+    /// VERIFY re-hashes every file instead of trusting the stored hash (`--paranoid`).
+    pub paranoid: bool,
+    /// Test hook: stall this long at the first checkpoint fsync (WRITER_TESTS N12).
+    pub test_slow_writer: Option<Duration>,
 }
 
 impl Default for Limits {
@@ -49,6 +61,12 @@ impl Default for Limits {
             checkpoint_bytes: 64 << 20,
             reserve_bytes: 1 << 30,
             peer_silence: Duration::from_secs(30),
+            ping_after: Duration::from_secs(10),
+            disk_slow_after: Duration::from_secs(20),
+            free_poll: Duration::from_secs(5),
+            xmp_always: false,
+            paranoid: false,
+            test_slow_writer: None,
         }
     }
 }

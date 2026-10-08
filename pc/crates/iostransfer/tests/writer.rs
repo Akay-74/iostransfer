@@ -153,6 +153,9 @@ impl Env {
         p.with_file_name(format!(".{}.part", p.file_name().unwrap().to_string_lossy()))
     }
     fn spawn(&self, crash: &[(&str, &str)]) -> Recv {
+        self.spawn_with(crash, &[])
+    }
+    fn spawn_with(&self, crash: &[(&str, &str)], extra: &[&str]) -> Recv {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_iostransfer"));
         cmd.args(["--config"])
             .arg(self.root.join("cfg"))
@@ -160,6 +163,7 @@ impl Env {
             .arg(self.dest())
             .args(["--dev-device", &format!("{DEV}:{}", hex::encode(SECRET))])
             .args(["--checkpoint-bytes", &C.to_string(), "--reserve-bytes", &RES.to_string()])
+            .args(extra)
             .env("NO_COLOR", "1")
             .env_remove("IOST_CRASH_AT")
             .stdout(Stdio::piped())
@@ -360,11 +364,14 @@ impl Phone {
         }
     }
     fn manifest(&mut self, assets: &[&A]) -> Need {
+        self.manifest_wire(assets.iter().map(|a| a.wire()).collect())
+    }
+    fn manifest_wire(&mut self, assets: Vec<Asset>) -> Need {
         let m = Manifest {
             job: Job { job_id: self.job.clone(), label: "test".into(), section: "photos".into(), mode: self.mode.into() },
             page: self.page,
             last: false,
-            assets: assets.iter().map(|a| a.wire()).collect(),
+            assets,
         };
         self.page += 1;
         self.send_json(FrameType::Manifest, &m);
@@ -1220,4 +1227,256 @@ fn n7e_reserved_base_without_files_still_collides() {
     recv.after_session_kill();
     assert_eq!(env.base_rel("B"), format!("{DIR}/20240314_111522_img_0001"));
     assert_eq!(env.base_rel("P"), format!("{DIR}/20240314_111522_IMG_0001_2"));
+}
+
+// ---------------------------------------------------------------- move: XMP, VERIFY (§3 X1, §4 N16, §5)
+
+const P_XMP: &str = "Test iPhone/Photos/2024/03/20240314_111522_IMG_0001.xmp";
+const P_XMP_TMP: &str = "Test iPhone/Photos/2024/03/.20240314_111522_IMG_0001.xmp.tmp";
+
+fn eiffel() -> Loc {
+    Loc { lat: 48.8583701, lon: 2.2944813, alt: None }
+}
+
+fn with_meta(a: &A, fav: bool, loc: Option<Loc>) -> Asset {
+    let mut w = a.wire();
+    w.fav = fav;
+    w.loc = loc;
+    w
+}
+
+fn send_asset(ph: &mut Phone, a: &A, need: &Need) {
+    for (k, off) in want_of(need, a.id) {
+        ph.send_res(0, a, &k, off);
+    }
+    ph.asset_end(a, a.keys(), true, None);
+}
+
+#[test]
+fn x1_crash_during_xmp_write_then_meta_refresh_n16() {
+    let env = Env::new("x1");
+    let p = asset_p();
+    {
+        let recv = env.spawn(&[("IOST_CRASH_AT", "X1")]);
+        let mut ph = Phone::connect_mode(&recv, "move");
+        let need = ph.manifest_wire(vec![with_meta(&p, true, Some(eiffel()))]);
+        send_asset(&mut ph, &p, &need);
+        recv.expect_crash();
+    }
+    assert!(env.file(P_XMP_TMP).exists() && !env.file(P_XMP).exists());
+    assert_eq!(env.row("P", "photo#0").unwrap().0, "done");
+    let recv = env.spawn(&[]);
+    assert!(!env.file(P_XMP_TMP).exists(), "recovery removes the tmp");
+    let mut ph = Phone::connect_mode(&recv, "move");
+    let need = ph.manifest_wire(vec![with_meta(&p, true, Some(eiffel()))]);
+    assert_eq!(need.have, vec!["P".to_string()]);
+    let x = String::from_utf8(read(&env.file(P_XMP))).unwrap();
+    assert!(x.contains("xmp:Rating=\"5\"") && x.contains("exif:GPSLatitude=\"48,51.5022060N\""), "{x}");
+    drop(ph);
+    // N16: favourite and location removed on the phone → sidecar rewritten before NEED.
+    let mut ph = Phone::connect_mode(&recv, "move");
+    let need = ph.manifest_wire(vec![with_meta(&p, false, None)]);
+    assert_eq!(need.have, vec!["P".to_string()]);
+    let x = String::from_utf8(read(&env.file(P_XMP))).unwrap();
+    assert!(!x.contains("Rating") && !x.contains("GPS"), "{x}");
+}
+
+#[test]
+fn copy_jobs_write_no_xmp_unless_asked() {
+    let env = Env::new("noxmp");
+    let recv = env.spawn(&[]);
+    let p = asset_p();
+    let mut ph = Phone::connect(&recv);
+    let need = ph.manifest(&[&p]);
+    ph.transfer(&p, &need);
+    assert!(!env.file(P_XMP).exists());
+    drop(ph);
+    drop(recv);
+    let env = Env::new("xmpflag");
+    let recv = env.spawn_with(&[], &["--xmp"]);
+    let mut ph = Phone::connect(&recv);
+    let need = ph.manifest(&[&p]);
+    ph.transfer(&p, &need);
+    assert!(env.file(P_XMP).exists());
+}
+
+fn vres(key: &str, size: u64, sha256: Option<String>) -> VerifyRes {
+    VerifyRes { key: key.into(), size, sha256 }
+}
+
+fn verify(ph: &mut Phone, seq: u64, assets: Vec<VerifyAsset>) -> Verified {
+    ph.send_json(FrameType::Verify, &Verify { seq, assets });
+    let v: Verified = ph.expect(FrameType::Verified);
+    assert_eq!(v.seq, seq);
+    v
+}
+
+fn vasset(id: &str, fav: bool, res: Vec<VerifyRes>) -> VerifyAsset {
+    VerifyAsset { id: id.into(), meta: VerifyMeta { created_ms: CREATED, fav, loc: None }, res }
+}
+
+fn bad1(v: &Verified) -> (String, String, Option<String>) {
+    assert!(v.ok.is_empty(), "{v:?}");
+    let b = &v.bad[0];
+    (b.id.clone(), b.why.clone(), b.key.clone())
+}
+
+#[test]
+fn v1_v9_verify() {
+    let env = Env::new("verify");
+    let recv = env.spawn(&[]);
+    let (p, e) = (asset_p(), asset_e(1, 6, 5, C + 1));
+    let mut ph = Phone::connect_mode(&recv, "move");
+    let need = ph.manifest_wire(vec![with_meta(&p, false, None), with_meta(&e, false, None)]);
+    send_asset(&mut ph, &p, &need);
+    assert_eq!(ph.ack().status, "durable");
+    send_asset(&mut ph, &e, &need);
+    assert_eq!(ph.ack().status, "durable");
+    let full = 4 * C + 100;
+    // V1
+    let v = verify(&mut ph, 0, vec![vasset("P", false, vec![vres("photo#0", full, None)])]);
+    assert_eq!(v.ok, vec!["P".to_string()]);
+    // V2 key the PC never had
+    let v = verify(&mut ph, 1, vec![vasset("P", false, vec![vres("photo#0", full, None), vres("paired_video#0", 10, None)])]);
+    assert_eq!(bad1(&v), ("P".into(), "missing_resource".into(), Some("paired_video#0".into())));
+    // V3 size
+    let v = verify(&mut ph, 2, vec![vasset("P", false, vec![vres("photo#0", full - 1, None)])]);
+    assert_eq!(bad1(&v).1, "size_mismatch");
+    // V5 adjustment hash differs
+    let adj = e.res("adjustment_data#0").data.clone();
+    let mut e_res: Vec<VerifyRes> = e.res.iter().map(|r| vres(r.key, r.data.len() as u64, None)).collect();
+    e_res[2].sha256 = Some(sha(&adj));
+    assert_eq!(verify(&mut ph, 3, vec![vasset("E", false, e_res.clone())]).ok, vec!["E".to_string()]);
+    e_res[2].sha256 = Some("0".repeat(64));
+    assert_eq!(bad1(&verify(&mut ph, 4, vec![vasset("E", false, e_res)])).1, "hash_mismatch");
+    // V6 meta changed → XMP rewritten first, then ok
+    let v = verify(&mut ph, 5, vec![vasset("P", true, vec![vres("photo#0", full, None)])]);
+    assert_eq!(v.ok, vec!["P".to_string()]);
+    assert!(String::from_utf8(read(&env.file(P_XMP))).unwrap().contains("xmp:Rating=\"5\""));
+    // V7 unknown asset
+    assert_eq!(bad1(&verify(&mut ph, 6, vec![vasset("nope", false, vec![])])).1, "unknown_asset");
+    // V4 file deleted by the user
+    std::fs::remove_file(env.file(P_REL)).unwrap();
+    assert_eq!(bad1(&verify(&mut ph, 7, vec![vasset("P", true, vec![vres("photo#0", full, None)])])).1, "file_missing");
+    // V9 too many assets
+    let many = (0..1001).map(|i| vasset(&format!("a{i}"), false, vec![])).collect();
+    ph.send_json(FrameType::Verify, &Verify { seq: 8, assets: many });
+    ph.expect_protocol_error();
+}
+
+#[test]
+fn v8_paranoid_rehash_catches_flipped_byte() {
+    let env = Env::new("v8");
+    let recv = env.spawn_with(&[], &["--paranoid"]);
+    let p = asset_p();
+    let mut ph = Phone::connect_mode(&recv, "move");
+    let need = ph.manifest_wire(vec![with_meta(&p, false, None)]);
+    send_asset(&mut ph, &p, &need);
+    assert_eq!(ph.ack().status, "durable");
+    let mut bytes = read(&env.file(P_REL));
+    bytes[1000] ^= 0xFF;
+    std::fs::write(env.file(P_REL), &bytes).unwrap();
+    let v = verify(&mut ph, 0, vec![vasset("P", false, vec![vres("photo#0", 4 * C + 100, None)])]);
+    assert_eq!(bad1(&v).1, "hash_mismatch");
+}
+
+#[test]
+fn verify_outside_move_job_is_a_protocol_error() {
+    let env = Env::new("vcopy");
+    let recv = env.spawn(&[]);
+    let mut ph = Phone::connect(&recv);
+    ph.manifest(&[&asset_p()]);
+    ph.send_json(FrameType::Verify, &Verify { seq: 0, assets: vec![] });
+    ph.expect_protocol_error();
+}
+
+// ---------------------------------------------------------------- flow control (N9, N12)
+
+#[test]
+fn n9_disk_low_pause_then_resume() {
+    let env = Env::new("n9");
+    let free = env.root.join("free");
+    std::fs::write(&free, (RES + 10).to_string()).unwrap();
+    let recv = env.spawn_with(&[], &["--test-free-bytes-file", free.to_str().unwrap(), "--free-poll-ms", "100"]);
+    let p = asset_p();
+    let mut ph = Phone::connect(&recv);
+    ph.manifest(&[&p]);
+    ph.begin(0, &p, "photo#0", 0);
+    let n = ph.nack();
+    assert_eq!((n.why.as_str(), n.attempt), ("disk_full", 1));
+    let pause: Pause = ph.expect(FrameType::Pause);
+    assert_eq!(pause.why, "disk_low");
+    assert!(!env.part(P_REL).exists(), "checked before the .part is created");
+    std::fs::write(&free, (1u64 << 30).to_string()).unwrap();
+    let t = Instant::now();
+    let _: Resume = ph.expect(FrameType::Resume);
+    assert!(t.elapsed() < Duration::from_secs(2));
+    ph.send_res(0, &p, "photo#0", 0);
+    ph.asset_end(&p, p.keys(), true, None);
+    assert_eq!(ph.ack().status, "durable");
+}
+
+#[test]
+fn n12_stalled_writer_pauses_instead_of_timing_out() {
+    let env = Env::new("n12");
+    let recv = env.spawn_with(
+        &[],
+        &["--test-slow-writer-ms", "3000", "--disk-slow-ms", "800", "--peer-silence-ms", "1500"],
+    );
+    let big = A { id: "P", kind: "photo", modified: 1, res: vec![r("photo#0", "photo", HEIC, "IMG_0001.HEIC", content(1, 8 << 20))] };
+    let mut ph = Phone::connect(&recv);
+    ph.manifest(&[&big]);
+    ph.send_res(0, &big, "photo#0", 0); // blocks while the receiver stops reading
+    ph.asset_end(&big, big.keys(), true, None);
+    let mut seen = vec![];
+    loop {
+        let f = ph.next(Duration::from_secs(15)).expect("session must survive the stall");
+        seen.push((f.ty, String::from_utf8_lossy(&f.payload).to_string()));
+        if f.ty == FrameType::Ack || f.ty == FrameType::Bye {
+            break;
+        }
+    }
+    let types: Vec<FrameType> = seen.iter().map(|(t, _)| *t).collect();
+    assert!(!types.contains(&FrameType::Bye), "{seen:?}");
+    assert!(seen.iter().any(|(t, p)| *t == FrameType::Pause && p.contains("disk_slow")), "{seen:?}");
+    assert!(types.contains(&FrameType::Resume), "{seen:?}");
+    assert!(seen.last().unwrap().1.contains("durable"));
+}
+
+// ---------------------------------------------------------------- rate limiting (THREAT_MODEL N4)
+
+#[test]
+fn failed_auths_are_rate_limited() {
+    let env = Env::new("ratelimit");
+    let recv = env.spawn(&[]);
+    let bad_login = || {
+        let mut s = TcpStream::connect(("127.0.0.1", recv.port)).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        s.write_all(&PREFACE).unwrap();
+        let mut pre = [0u8; 8];
+        if s.read_exact(&mut pre).is_err() {
+            return false; // dropped before the preface: rate limited
+        }
+        let hello = Frame::json(
+            FrameType::Hello,
+            &Hello {
+                proto: ProtoRange { min: 1, max: 1 },
+                device_id: "11111111-2222-3333-4444-555555555555".into(),
+                device_name: "x".into(),
+                app_version: "t".into(),
+                os: "t".into(),
+                auth: HelloAuth::Secret { s_nonce: "00".repeat(32) },
+            },
+        );
+        let mut b = BytesMut::new();
+        FrameCodec.encode(hello, &mut b).unwrap();
+        s.write_all(&b).unwrap();
+        let mut sink = vec![];
+        let _ = s.read_to_end(&mut sink);
+        true
+    };
+    for i in 0..5 {
+        assert!(bad_login(), "attempt {i} must reach the handshake");
+    }
+    assert!(!bad_login(), "6th attempt within a minute is dropped");
 }

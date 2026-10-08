@@ -62,6 +62,27 @@ enum Cmd {
         /// Free-space reserve in bytes (tests only; default 1 GiB)
         #[arg(long, hide = true)]
         reserve_bytes: Option<u64>,
+        /// Also write an .xmp sidecar (date, location, favourite) in copy jobs; move jobs always do
+        #[arg(long)]
+        xmp: bool,
+        /// VERIFY re-hashes every file before the phone may delete (slower, catches disk corruption)
+        #[arg(long)]
+        paranoid: bool,
+        /// Test hook: stall the first checkpoint fsync this many ms
+        #[arg(long, hide = true)]
+        test_slow_writer_ms: Option<u64>,
+        /// Test hook: read "free bytes" from this file instead of the disk
+        #[arg(long, hide = true)]
+        test_free_bytes_file: Option<PathBuf>,
+        /// Test hook: free-space poll interval in ms while paused (default 5000)
+        #[arg(long, hide = true)]
+        free_poll_ms: Option<u64>,
+        /// Test hook: peer-silence timeout in ms (default 30000)
+        #[arg(long, hide = true)]
+        peer_silence_ms: Option<u64>,
+        /// Test hook: PAUSE{disk_slow} after the writer is blocked this many ms (default 20000)
+        #[arg(long, hide = true)]
+        disk_slow_ms: Option<u64>,
     },
     /// Manage paired iPhones
     Devices {
@@ -103,11 +124,35 @@ async fn main() -> Result<()> {
     create_private_dir(&config)?;
     match cli.cmd {
         Cmd::Pair { dest, port } => pair(&config, &dest, port).await,
-        Cmd::Receive { dest, port, insecure_dev, dev_device, checkpoint_bytes, reserve_bytes } => {
-            let mut limits = Limits::default();
-            limits.checkpoint_bytes = checkpoint_bytes.unwrap_or(limits.checkpoint_bytes).max(1);
-            limits.reserve_bytes = reserve_bytes.unwrap_or(limits.reserve_bytes);
-            receive(&config, &dest, port, insecure_dev, &dev_device, limits).await
+        Cmd::Receive {
+            dest,
+            port,
+            insecure_dev,
+            dev_device,
+            checkpoint_bytes,
+            reserve_bytes,
+            xmp,
+            paranoid,
+            test_slow_writer_ms,
+            test_free_bytes_file,
+            free_poll_ms,
+            peer_silence_ms,
+            disk_slow_ms,
+        } => {
+            let d = Limits::default();
+            let ms = Duration::from_millis;
+            let limits = Limits {
+                checkpoint_bytes: checkpoint_bytes.unwrap_or(d.checkpoint_bytes).max(1),
+                reserve_bytes: reserve_bytes.unwrap_or(d.reserve_bytes),
+                xmp_always: xmp,
+                paranoid,
+                test_slow_writer: test_slow_writer_ms.map(ms),
+                free_poll: free_poll_ms.map_or(d.free_poll, ms),
+                peer_silence: peer_silence_ms.map_or(d.peer_silence, ms),
+                disk_slow_after: disk_slow_ms.map_or(d.disk_slow_after, ms),
+                ..d
+            };
+            receive(&config, &dest, port, insecure_dev, &dev_device, limits, test_free_bytes_file).await
         }
         Cmd::Devices { cmd } => devices(&config, cmd),
         Cmd::SpikeSink { port, tls, log_dir } => spike_sink(&config, port, tls, log_dir).await,
@@ -184,7 +229,14 @@ fn pc_name() -> String {
     if name.is_empty() { "iostransfer-pc".into() } else { name }
 }
 
-fn build_ctx(config: &Path, dest: &Path, devices: DeviceDb, limits: Limits, confirm_pair: ConfirmPair) -> Result<Arc<Ctx>> {
+fn build_ctx(
+    config: &Path,
+    dest: &Path,
+    devices: DeviceDb,
+    limits: Limits,
+    confirm_pair: ConfirmPair,
+    free_bytes_file: Option<PathBuf>,
+) -> Result<Arc<Ctx>> {
     let index = open_index(dest)?;
     // Finish or roll back interrupted writes before accepting anything (PROTOCOL §10).
     recovery::recover(&index, dest).context("startup recovery")?;
@@ -198,7 +250,10 @@ fn build_ctx(config: &Path, dest: &Path, devices: DeviceDb, limits: Limits, conf
         pc_name: pc_name(),
         limits,
         tokens: Mutex::new(HashMap::new()),
-        free_bytes: Arc::new(move || fs4::available_space(&free_dest).unwrap_or(0)),
+        free_bytes: match free_bytes_file {
+            Some(f) => Arc::new(move || std::fs::read_to_string(&f).ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0)),
+            None => Arc::new(move || fs4::available_space(&free_dest).unwrap_or(0)),
+        },
         confirm_pair,
     }))
 }
@@ -279,7 +334,7 @@ async fn pair(config: &Path, dest: &Path, port: u16) -> Result<()> {
         }
         .boxed()
     });
-    let ctx = build_ctx(config, dest, open_devices(config)?, Limits::default(), confirm)?;
+    let ctx = build_ctx(config, dest, open_devices(config)?, Limits::default(), confirm, None)?;
     let ips = lan_ips();
     if ips.is_empty() {
         bail!("no private IPv4 address found; connect this PC to the same Wi‑Fi/LAN as the iPhone");
@@ -328,7 +383,15 @@ fn dev_device(spec: &str) -> Result<(String, [u8; 32])> {
     Ok((id, secret))
 }
 
-async fn receive(config: &Path, dest: &Path, port: u16, insecure_dev: bool, dev_devices: &[String], limits: Limits) -> Result<()> {
+async fn receive(
+    config: &Path,
+    dest: &Path,
+    port: u16,
+    insecure_dev: bool,
+    dev_devices: &[String],
+    limits: Limits,
+    free_bytes_file: Option<PathBuf>,
+) -> Result<()> {
     let no_pairing: ConfirmPair = Arc::new(|_| async { false }.boxed());
     let on_session: OnSession = Arc::new(|ctx, s| session::run(ctx, s).boxed());
     std::fs::create_dir_all(dest).with_context(|| format!("creating {}", dest.display()))?;
@@ -339,14 +402,16 @@ async fn receive(config: &Path, dest: &Path, port: u16, insecure_dev: bool, dev_
             let (id, secret) = dev_device(spec)?;
             devices.put(&id, "dev-device", &secret, 0)?;
         }
-        let ctx = build_ctx(config, dest, devices, limits, no_pairing)?;
+        let ctx = build_ctx(config, dest, devices, limits, no_pairing, free_bytes_file)?;
         eprintln!("\x1b[31mWARNING: --insecure-dev: plaintext on 127.0.0.1 only. Never use with a real phone.\x1b[0m");
         let listener = TcpListener::bind(("127.0.0.1", port)).await?;
         println!("Listening on {}", listener.local_addr()?);
         return Ok(serve(listener, ctx, None, on_session).await?);
     }
     let id = Identity::load_or_create(config)?;
-    let ctx = build_ctx(config, dest, open_devices(config)?, limits, no_pairing)?;
+    let ctx = build_ctx(config, dest, open_devices(config)?, limits, no_pairing, free_bytes_file)?;
+    #[cfg(windows)]
+    firewall_hint();
     let ips = lan_ips();
     let listener = TcpListener::bind(("0.0.0.0", port)).await.with_context(|| format!("port {port} is busy"))?;
     let _mdns = advertise(&ctx.pc_id, &ips, port).map_err(|e| tracing::warn!("Bonjour advertising failed: {e}")).ok();
@@ -475,4 +540,18 @@ fn percent_encode(s: &str) -> String {
             _ => format!("%{b:02X}"),
         })
         .collect()
+}
+
+/// Windows Firewall silently blocks the phone if the first-run prompt was dismissed (ARCHITECTURE §4.6).
+#[cfg(windows)]
+fn firewall_hint() {
+    let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "iostransfer.exe".into());
+    let has_rule = std::process::Command::new("netsh")
+        .args(["advfirewall", "firewall", "show", "rule", "name=iostransfer"])
+        .output()
+        .is_ok_and(|o| o.status.success());
+    if !has_rule {
+        println!("If the iPhone can't find this PC, allow iostransfer through Windows Firewall (run as administrator):");
+        println!("  netsh advfirewall firewall add rule name=iostransfer dir=in action=allow program=\"{exe}\" enable=yes");
+    }
 }

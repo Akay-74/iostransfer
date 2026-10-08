@@ -63,13 +63,18 @@ fn suffix(ty: &str) -> String {
     }
 }
 
-/// Phone-local wall time of the asset: (year, month, "YYYYMMDD_HHMMSS").
-pub fn local_time(created_ms: i64, tz_min: i32) -> (i64, u32, String) {
+/// Phone-local wall time: (year, month, day, hour, minute, second).
+pub fn local_parts(created_ms: i64, tz_min: i32) -> (i64, u32, u32, i64, i64, i64) {
     let secs = (created_ms + tz_min as i64 * 60_000).div_euclid(1000);
     let (days, sod) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
     let (y, m, d) = civil_from_days(days);
-    let stamp = format!("{y:04}{m:02}{d:02}_{:02}{:02}{:02}", sod / 3600, sod % 3600 / 60, sod % 60);
-    (y, m, stamp)
+    (y, m, d, sod / 3600, sod % 3600 / 60, sod % 60)
+}
+
+/// Phone-local wall time of the asset: (year, month, "YYYYMMDD_HHMMSS").
+pub fn local_time(created_ms: i64, tz_min: i32) -> (i64, u32, String) {
+    let (y, m, d, h, mi, s) = local_parts(created_ms, tz_min);
+    (y, m, format!("{y:04}{m:02}{d:02}_{h:02}{mi:02}{s:02}"))
 }
 
 /// Days since 1970-01-01 → (year, month, day), proleptic Gregorian (H. Hinnant).

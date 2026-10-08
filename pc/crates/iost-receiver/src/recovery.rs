@@ -120,6 +120,10 @@ fn sweep_stray_parts(dest: &Path, live: &HashSet<PathBuf>, rep: &mut Report) -> 
                 if !(dir == dest && name == ".iostransfer") {
                     stack.push(path);
                 }
+            } else if ft.is_file() && name.starts_with('.') && name.ends_with(".xmp.tmp") {
+                // X1: a sidecar that never got renamed; the asset's xmp_meta_hash wasn't updated either.
+                fs::remove_file(&path)?;
+                rep.stray_parts_removed += 1;
             } else if ft.is_file() && name.starts_with('.') && name.ends_with(".part") && !live.contains(&path) {
                 fs::remove_file(&path)?;
                 rep.stray_parts_removed += 1;
