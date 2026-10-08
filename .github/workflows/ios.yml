@@ -33,15 +33,19 @@ jobs:
         run: xcodegen generate
       - name: Build (unsigned)
         run: |
-          set -o pipefail
-          xcodebuild -project IOStransfer.xcodeproj -scheme IOStransfer -configuration Release \
-            -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build \
-            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build | tee build.log | grep -E "error:|warning: .*deprecated|BUILD" || true
-          test "${PIPESTATUS[0]}" -eq 0
+          if ! xcodebuild -project IOStransfer.xcodeproj -scheme IOStransfer -configuration Release \
+              -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build \
+              CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build > build.log 2>&1; then
+            grep -E "error:" build.log | sort -u | head -100
+            exit 1
+          fi
+          grep -E "warning:" build.log | grep -v "/SourcePackages/" | sort -u | head -50 || true
       - name: Package .ipa
         run: |
+          APP=build/Build/Products/Release-iphoneos/IOStransfer.app
+          test -x "$APP/IOStransfer" || { echo "no executable in $APP"; exit 1; }
           mkdir -p Payload
-          cp -R build/Build/Products/Release-iphoneos/IOStransfer.app Payload/
+          cp -R "$APP" Payload/
           zip -qry IOStransfer.ipa Payload
           ls -lh IOStransfer.ipa
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

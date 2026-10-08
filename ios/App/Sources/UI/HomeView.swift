@@ -4,13 +4,13 @@ import SwiftUI
 
 struct JobRequest: Identifiable {
     let id = UUID()
-    let section: Section
+    let section: MediaSection
     let mode: JobMode
 }
 
 struct HomeView: View {
     @EnvironmentObject var library: LibraryModel
-    @State private var section: Section = .photos
+    @State private var section: MediaSection = .photos
     @State private var job: JobRequest?
     @State private var settings = false
     @State private var selectedCount = 0
@@ -19,14 +19,7 @@ struct HomeView: View {
         NavigationStack {
             List(library.collections[section] ?? []) { c in
                 NavigationLink(value: c) {
-                    HStack {
-                        Text(c.title)
-                        Spacer()
-                        let n = library.selection(section).collections.contains(c.id)
-                            ? library.selection(section).count(in: c.id, FetchIndex(PhotoLibrary.fetch(c.id, section))) : 0
-                        if n > 0 { Text("\(n) selected").foregroundStyle(.tint) }
-                        Text("\(c.count)").foregroundStyle(.secondary)
-                    }
+                    CollectionRow(collection: c, selected: selectedIn(c))
                 }
             }
             .navigationDestination(for: CollectionInfo.self) { GridScreen(collection: $0, section: section) }
@@ -34,8 +27,8 @@ struct HomeView: View {
             .toolbar {
                 ToolbarItem(placement: .principal) {
                     Picker("Section", selection: $section) {
-                        Text("Photos").tag(Section.photos)
-                        Text("Videos").tag(Section.videos)
+                        Text("Photos").tag(MediaSection.photos)
+                        Text("Videos").tag(MediaSection.videos)
                     }
                     .pickerStyle(.segmented)
                     .frame(width: 220)
@@ -63,6 +56,12 @@ struct HomeView: View {
         }
     }
 
+    private func selectedIn(_ c: CollectionInfo) -> Int {
+        let sel = library.selection(section)
+        guard sel.collections.contains(c.id) else { return 0 }
+        return sel.count(in: c.id, FetchIndex(PhotoLibrary.fetch(c.id, section)))
+    }
+
     private func recount() {
         selectedCount = library.count(section)
     }
@@ -71,7 +70,7 @@ struct HomeView: View {
 struct GridScreen: View {
     @EnvironmentObject var library: LibraryModel
     let collection: CollectionInfo
-    let section: Section
+    let section: MediaSection
     @State private var rangeMode = false
     @State private var rangeStart: Int?
 
@@ -99,5 +98,21 @@ struct GridScreen: View {
                 }
             }
             .onChange(of: rangeMode) { _ in rangeStart = nil }
+    }
+}
+
+struct CollectionRow: View {
+    let collection: CollectionInfo
+    let selected: Int
+
+    var body: some View {
+        HStack {
+            Text(collection.title)
+            Spacer()
+            if selected > 0 {
+                Text("\(selected) selected").foregroundStyle(.tint)
+            }
+            Text("\(collection.count)").foregroundStyle(.secondary)
+        }
     }
 }

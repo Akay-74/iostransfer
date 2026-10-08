@@ -9,7 +9,7 @@ import UIKit
 struct GridRepresentable: UIViewControllerRepresentable {
     @EnvironmentObject var library: LibraryModel
     let collection: String
-    let section: Section
+    let section: MediaSection
     let rangeMode: Bool
     @Binding var rangeStart: Int?
 

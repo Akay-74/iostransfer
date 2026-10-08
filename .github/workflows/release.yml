@@ -1,0 +1,77 @@
+# Tag v* → GitHub Release with iostransfer (Linux), iostransfer.exe (Windows), IOStransfer.ipa and
+# SHA256SUMS (THREAT_MODEL N20). Actions pinned to commit SHAs (N18).
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  pc:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            bin: iostransfer
+            asset: iostransfer-linux-x86_64
+          - os: windows-latest
+            bin: iostransfer.exe
+            asset: iostransfer-windows-x86_64.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          toolchain: stable
+      - name: Build
+        working-directory: pc
+        run: cargo build --release --locked -p iostransfer
+      - name: Rename
+        shell: bash
+        run: cp "pc/target/release/${{ matrix.bin }}" "${{ matrix.asset }}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
+
+  ipa:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Build unsigned .ipa
+        working-directory: ios/App
+        run: |
+          brew install xcodegen
+          xcodegen generate
+          xcodebuild -project IOStransfer.xcodeproj -scheme IOStransfer -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build -quiet
+          test -x build/Build/Products/Release-iphoneos/IOStransfer.app/IOStransfer
+          mkdir -p Payload && cp -R build/Build/Products/Release-iphoneos/IOStransfer.app Payload/
+          zip -qry ../../IOStransfer.ipa Payload
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: IOStransfer.ipa
+          path: IOStransfer.ipa
+
+  publish:
+    needs: [pc, ipa]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums and release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd dist
+          sha256sum * > SHA256SUMS
+          gh release create "${GITHUB_REF_NAME}" * --repo "${GITHUB_REPOSITORY}" --title "IOStransfer ${GITHUB_REF_NAME}" \
+            --notes "Unsigned builds. iPhone: install IOStransfer.ipa with SideStore (see README). PC: run iostransfer pair, then iostransfer receive."
