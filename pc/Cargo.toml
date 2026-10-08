@@ -1,0 +1,7 @@
+[workspace]
+resolver = "2"
+members = ["crates/iost-proto", "crates/iost-receiver", "crates/iostransfer"]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
