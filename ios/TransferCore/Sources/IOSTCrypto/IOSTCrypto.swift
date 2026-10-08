@@ -127,3 +127,22 @@ public struct FingerprintInput: Equatable, Sendable {
         IOSTCrypto.sha256(Array(canonical.utf8))
     }
 }
+
+/// Incremental SHA-256 (copyable value).
+public struct SHA256Stream: Sendable {
+    private var h = SHA256()
+
+    public init() {}
+
+    public mutating func update<D: DataProtocol>(_ data: D) {
+        h.update(data: data)
+    }
+
+    public func finalize() -> [UInt8] {
+        Array(h.finalize())
+    }
+}
+
+public extension Array where Element == UInt8 {
+    var hexString: String { map { String(format: "%02x", $0) }.joined() }
+}

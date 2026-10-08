@@ -1,13 +1,13 @@
-# TransferCore (Swift): build and test on Linux, the same way it runs locally.
-# Image and actions are pinned by digest/SHA (THREAT_MODEL N18).
+# TransferCore (Swift): unit tests on Linux, plus the end-to-end interop test against the real
+# Rust receiver. Image and actions are pinned by digest/SHA (THREAT_MODEL N18).
 name: transfercore
 
 on:
   push:
     branches: [main]
-    paths: ["ios/TransferCore/**", "testdata/**", ".github/workflows/transfercore.yml"]
+    paths: ["ios/TransferCore/**", "pc/**", "testdata/**", "tests/**", ".github/workflows/transfercore.yml"]
   pull_request:
-    paths: ["ios/TransferCore/**", "testdata/**", ".github/workflows/transfercore.yml"]
+    paths: ["ios/TransferCore/**", "pc/**", "testdata/**", "tests/**", ".github/workflows/transfercore.yml"]
 
 permissions:
   contents: read
@@ -25,5 +25,21 @@ jobs:
         working-directory: ios/TransferCore
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: SQLite headers
+        run: apt-get update -q && apt-get install -yq --no-install-recommends libsqlite3-dev
       - name: Test
         run: swift test
+
+  interop:
+    runs-on: ubuntu-latest
+    container: swift:6.4-noble@sha256:31d14d727f4451f25e29bac9c42563a098c39ac66415e8bad970f48038e38aca
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Tools
+        run: apt-get update -q && apt-get install -yq --no-install-recommends libsqlite3-dev curl ca-certificates python3 gcc
+      - name: Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Swift sender vs Rust receiver
+        run: tests/interop.sh
