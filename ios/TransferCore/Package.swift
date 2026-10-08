@@ -10,6 +10,7 @@ let package = Package(
         .library(name: "IOSTCrypto", targets: ["IOSTCrypto"]),
         .library(name: "IOSTJournal", targets: ["IOSTJournal"]),
         .library(name: "IOSTCore", targets: ["IOSTCore"]),
+        .library(name: "IOSTSelection", targets: ["IOSTSelection"]),
     ],
     dependencies: [
         // The only dependency (TRANSFERCORE §2), pinned exactly (THREAT_MODEL N18).
@@ -21,10 +22,12 @@ let package = Package(
         .target(name: "IOSTJournal", dependencies: ["CSQLite"]),
         .target(name: "IOSTCore", dependencies: ["IOSTWire", "IOSTCrypto", "IOSTJournal"]),
         .executableTarget(name: "iost-interop-sender", dependencies: ["IOSTCore"]),
+        .target(name: "IOSTSelection"),
         .target(name: "IOSTCrypto", dependencies: [.product(name: "Crypto", package: "swift-crypto")]),
         .testTarget(name: "IOSTWireTests", dependencies: ["IOSTWire"]),
         .testTarget(name: "IOSTCryptoTests", dependencies: ["IOSTCrypto"]),
         .testTarget(name: "IOSTJournalTests", dependencies: ["IOSTJournal"]),
         .testTarget(name: "IOSTCoreTests", dependencies: ["IOSTCore"]),
+        .testTarget(name: "IOSTSelectionTests", dependencies: ["IOSTSelection"]),
     ]
 )
