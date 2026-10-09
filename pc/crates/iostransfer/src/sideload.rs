@@ -518,6 +518,28 @@ mod tests {
         assert_eq!(super::keyring_get(&who).await, None);
     }
 
+    /// Network: Apple's sign-in servers answer (a made-up account must fail with an Apple error,
+    /// not a connection error).
+    #[tokio::test]
+    #[ignore]
+    async fn apple_signin_reachable() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let _ = isideload::init();
+        let dir = std::env::temp_dir().join(format!("iost-ani-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let anisette = isideload::anisette::remote_v3::RemoteV3AnisetteProvider::default()
+            .unwrap()
+            .set_storage(Box::new(isideload::util::fs_storage::FsStorage::new(dir.clone())));
+        let r = isideload::auth::apple_account::AppleAccount::builder("nobody-iost-test@example.invalid")
+            .anisette_provider(anisette)
+            .login("wrong-password", |_| async { Ok::<_, rootcause::Report>(isideload::auth::apple_account::TwoFactorCallbackResponse::Abort) })
+            .await;
+        let e = format!("{:?}", r.err().expect("must not log in"));
+        println!("{e}");
+        assert!(!e.contains("error sending request"), "{e}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// Network: the latest release's app downloads and matches SHA256SUMS.
     #[cfg(not(embedded_ipa))]
     #[tokio::test]
