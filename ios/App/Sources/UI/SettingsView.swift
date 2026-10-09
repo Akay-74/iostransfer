@@ -30,6 +30,9 @@ struct SettingsView: View {
                 }
                 Section("About") {
                     LabeledContent("Version", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?")
+                    if let until = AppExpiry.date {
+                        LabeledContent("Signed until", value: until.formatted(date: .abbreviated, time: .shortened))
+                    }
                     Text("iCloud Photos must stay off while you use Move.").font(.footnote)
                 }
             }

@@ -14,64 +14,47 @@ untouched originals (HEIC, HEVC, ProRAW, Live Photos, edits included). No Mac, n
 - An iPhone with **iCloud Photos turned off** (Settings → your name → iCloud → Photos). With iCloud
   Photos on, deleting on the iPhone deletes everywhere, so IOStransfer requires it off.
 - A PC on the same Wi‑Fi/LAN, running Linux or Windows.
-- A free Apple ID (a separate one just for sideloading is recommended).
+- A free Apple ID (a separate one just for sideloading is recommended) and a USB cable (first time only).
 
-## 1. Install the PC receiver
+## Install and set up (one program, double-click)
 
-Download `iostransfer` (Linux) or `iostransfer.exe` (Windows) from the latest
-[GitHub Actions run](https://github.com/Akay-74/iostransfer/actions/workflows/pc.yml) (artifact
-`iostransfer-Linux` / `iostransfer-Windows`) or the [Releases](https://github.com/Akay-74/iostransfer/releases) page.
+**Windows:** download `IOStransfer-windows-x86_64.exe` from the
+[latest release](https://github.com/Akay-74/iostransfer/releases/latest) and double-click it.
+SmartScreen says "unknown publisher" (code signing costs money): click *More info → Run anyway*.
 
-Or build it yourself (Rust 1.85+):
+**Linux:** download `IOStransfer-linux-x86_64.tar.gz`, extract it, and double-click `iostransfer`
+(or run `./iostransfer` in a terminal). It opens its own terminal window.
 
-```bash
-cd pc && cargo build --release -p iostransfer   # → pc/target/release/iostransfer
-```
+The program then walks you through everything, one time:
 
-**Windows:** SmartScreen shows "unknown publisher" (the binary isn't code-signed; that costs money).
-Click *More info → Run anyway*. On first run, allow it through Windows Firewall, or run once as administrator:
+1. **Firewall.** Windows asks once for permission (click *Yes*). On Linux it asks for your password only if
+   the firewall blocks it.
+2. **The iPhone app.** Plug the iPhone in with a USB cable and unlock it. On Windows the program first
+   offers to install Apple's iPhone driver (it comes with iTunes, from Apple, free). Tap **Trust** on the
+   iPhone, then type your **Apple ID** and password, plus the verification code Apple sends. Any free
+   Apple ID works; a separate one just for this is safer. The password is kept in Windows Credential
+   Manager or the Linux keyring, never in a file.
+   Then, on the iPhone:
+   - Settings → Privacy & Security → **Developer Mode** → on, restart, confirm *Turn On*.
+   - Settings → General → **VPN & Device Management** → your Apple ID → **Trust**.
+3. **Pairing.** Open IOStransfer on the iPhone, finish its short setup (iCloud Photos off, allow
+   Photos), tap **Scan the pairing QR code** and point it at the QR code in the PC window. Check that
+   both screens show the **same code**, then type `y` and press Enter on the PC.
 
-```
-netsh advfirewall firewall add rule name=iostransfer dir=in action=allow program="C:\path\to\iostransfer.exe" enable=yes
-```
+After that, just double-click the program whenever you want to transfer. Leave its window open: it
+receives photos and renews the iPhone app before it expires. Free Apple IDs sign apps for 7 days; the
+PC renews after 4 days, over USB or over Wi‑Fi whenever the iPhone and PC are on the same network.
+If it's ever about to run out, the iPhone app shows a banner.
 
-**Linux (Fedora/Nobara):** the default firewalld zone already allows it. Elsewhere open TCP 47800 and UDP 5353.
+Commands in the PC window (type the letter, press Enter): **P** pair another iPhone, **I** install or
+renew the iPhone app over USB, **O** open the photos folder, **D** change the folder, **Q** quit.
 
-## 2. Install the iPhone app (no Mac)
+Photos go to `Pictures/iPhone` unless you change it with **D** (or start with `--dest <folder>`).
 
-The app is built by GitHub Actions as an unsigned `IOStransfer.ipa`
-([ios workflow](https://github.com/Akay-74/iostransfer/actions/workflows/ios.yml), artifact
-`IOStransfer-ipa`). It is signed with your free Apple ID when you install it:
+**Already use SideStore?** `IOStransfer.ipa` is in every release: install it with SideStore as usual and
+press Enter at step 2 to skip the USB install.
 
-1. Install [iloader](https://github.com/nab138/iloader) (Linux: RPM/DEB/AppImage, needs the `usbmuxd`
-   and `fuse` packages; also Windows/macOS).
-2. Connect the iPhone by USB, trust the PC, and use iloader to install **SideStore** (it also writes the
-   pairing file SideStore needs). Install **LocalDevVPN** from the App Store.
-3. On the iPhone: Settings → Privacy & Security → **Developer Mode** → on (restart when asked).
-4. Open SideStore → My Apps → **+** → choose `IOStransfer.ipa`.
-
-Free Apple IDs sign apps for **7 days**; SideStore refreshes IOStransfer on the phone over Wi‑Fi
-(LocalDevVPN), no PC trip needed. If a refresh ever fails (Apple changes break sideloading tools from
-time to time), reinstall with iloader; your pairing and settings survive.
-
-## 3. Pair (once)
-
-On the PC:
-
-```bash
-iostransfer pair --dest ~/Pictures/iPhone
-```
-
-It prints a QR code and a pairing code like `7K3M-Q9TX`. In the app: set-up screen → **Scan the pairing
-QR code**. Check that both screens show the **same code**, tap **Pair**, then type `y` on the PC.
-
-## 4. Transfer
-
-On the PC (leave it running):
-
-```bash
-iostransfer receive --dest ~/Pictures/iPhone
-```
+## Transfer
 
 On the iPhone: pick **Photos** or **Videos**, open a collection (Recents, Screenshots, Selfies, Live
 Photos, Portrait, any album…), and select:
@@ -83,6 +66,16 @@ Photos, Portrait, any album…), and select:
 Then **Copy** or **Move**. Keep the screen open while it runs (or enable the experimental
 *Keep transferring when locked* in Settings).
 
+## Command line (advanced)
+
+The same program has subcommands for scripts and servers:
+
+```bash
+iostransfer pair --dest ~/Pictures/iPhone      # pairing QR only
+iostransfer receive --dest ~/Pictures/iPhone   # receive only (no setup, no renewal)
+iostransfer devices list | revoke <id>
+```
+
 ### Options
 
 | `receive` option | Effect |
@@ -91,7 +84,6 @@ Then **Copy** or **Move**. Keep the screen open while it runs (or enable the exp
 | `--paranoid` | Before the phone deletes anything, re-hash every file on the PC (slower; catches disk corruption) |
 | `--port N` | Listen on another port (default 47800). If you change it, pair with `iostransfer pair --receive-port N` so the iPhone knows |
 
-`iostransfer devices list` / `iostransfer devices revoke <id>` manage paired iPhones.
 
 ## What you get on the PC
 
@@ -111,12 +103,16 @@ file is never overwritten. The PC never deletes anything.
 
 | Problem | Fix |
 |---|---|
-| iPhone can't find the PC | Same Wi‑Fi? Guest networks often block devices from seeing each other. Windows: firewall rule above. Allow *Local Network* for IOStransfer in iPhone Settings → Privacy. |
+| iPhone can't find the PC | Same Wi‑Fi? Guest networks often block devices from seeing each other. Windows: restart the program and click *Yes* at the firewall prompt. Allow *Local Network* for IOStransfer in iPhone Settings → Privacy. |
+| "Untrusted Developer" when opening the app | Settings → General → VPN & Device Management → your Apple ID → Trust. |
+| App won't open, no Developer Mode switch | Plug the iPhone in with the PC program open and type `I`: installing reveals the switch. |
+| Apple ID: "maximum number of certificates" | Pick an old one to revoke when asked (apps signed by it, e.g. via SideStore, stop opening until re-signed). |
+| "port 47800 is in use" | IOStransfer is already open in another window. |
 | "another iostransfer is already using …" | Only one `receive` per destination folder. |
-| "Pairing failed" | Run `iostransfer pair` again for a fresh QR code (codes expire after 10 minutes and work once). |
+| "Pairing failed" | Type `P` in the PC window for a fresh QR code (codes expire after 10 minutes and work once). |
 | Some items "kept on iPhone" after a move | They changed during the move, can't be deleted (e.g. synced from a computer), or failed verification. They are safe; run Move again. |
 | Storage not freed after a move | Empty *Recently Deleted* in Photos. Spot-check the PC first. |
-| App won't open after a week | The 7-day signature expired: refresh in SideStore. |
+| App won't open after a week | The signature expired: open the PC program with the iPhone plugged in (it renews automatically), or refresh in SideStore if you use that. |
 
 ## How it works
 

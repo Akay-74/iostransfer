@@ -22,8 +22,8 @@ targets:
       path: Sources/Info.plist
       properties:
         CFBundleDisplayName: IOStransfer
-        CFBundleShortVersionString: "0.1.0"
-        CFBundleVersion: "1"
+        CFBundleShortVersionString: "0.2.0"
+        CFBundleVersion: "2"
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         NSPhotoLibraryUsageDescription: IOStransfer copies the photos and videos you choose to your PC, and deletes them from this iPhone only when you choose Move.
