@@ -355,6 +355,12 @@ impl Installer {
         let mut account = match AppleAccount::builder(&email).anisette_provider(anisette).login(&password, two_factor).await {
             Ok(a) => a,
             Err(e) => {
+                let detail = format!("{e:?}");
+                if detail.contains("error sending request") || detail.contains("provisioning socket") {
+                    // A network problem, not the password: say which server and why.
+                    diagnose_network().await;
+                    bail!("couldn't reach Apple's sign-in servers (details above)");
+                }
                 if from_keyring {
                     // Probably a changed password: forget it, ask next time.
                     keyring_delete(&email).await;
@@ -410,6 +416,43 @@ pub fn embedded_ipa_sha256() -> Option<String> {
     return Some(hex::encode(Sha256::digest(EMBEDDED_IPA)));
     #[cfg(not(embedded_ipa))]
     None
+}
+
+/// Explain a failed connection to Apple's sign-in server or the anisette helper.
+async fn diagnose_network() {
+    let client = match reqwest::Client::builder().timeout(Duration::from_secs(15)).build() {
+        Ok(c) => c,
+        Err(e) => return println!("Can't make HTTPS connections: {}", error_chain(&e)),
+    };
+    let servers = [
+        ("Apple's sign-in server", "https://gsa.apple.com/grandslam/GsService2/lookup"),
+        ("the anisette helper", isideload::anisette::remote_v3::DEFAULT_ANISETTE_V3_URL),
+    ];
+    let mut failed = false;
+    for (what, url) in servers {
+        match client.get(url).send().await {
+            Ok(r) => println!("  {what}: reachable (HTTP {})", r.status().as_u16()),
+            Err(e) => {
+                failed = true;
+                println!("  {what} ({url}): NOT reachable: {}", error_chain(&e));
+            }
+        }
+    }
+    if failed {
+        println!("Usual causes: the PC's date/time is wrong; antivirus \"HTTPS/web scanning\"; a VPN, proxy or");
+        println!("school/office network; DNS. Check that the date/time is right, then try another network (e.g. a phone hotspot).");
+    }
+}
+
+fn error_chain(e: &dyn std::error::Error) -> String {
+    let mut s = e.to_string();
+    let mut src = e.source();
+    while let Some(c) = src {
+        s.push_str(": ");
+        s.push_str(&c.to_string());
+        src = c.source();
+    }
+    s
 }
 
 // The OS credential store (Windows Credential Manager, Secret Service on Linux). Its calls block, so
@@ -516,6 +559,28 @@ mod tests {
         assert_eq!(super::keyring_get(&who).await.as_deref(), Some("pw 1"));
         super::keyring_delete(&who).await;
         assert_eq!(super::keyring_get(&who).await, None);
+    }
+
+    /// Network: Apple's sign-in servers answer (a made-up account must fail with an Apple error,
+    /// not a connection error).
+    #[tokio::test]
+    #[ignore]
+    async fn apple_signin_reachable() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let _ = isideload::init();
+        let dir = std::env::temp_dir().join(format!("iost-ani-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let anisette = isideload::anisette::remote_v3::RemoteV3AnisetteProvider::default()
+            .unwrap()
+            .set_storage(Box::new(isideload::util::fs_storage::FsStorage::new(dir.clone())));
+        let r = isideload::auth::apple_account::AppleAccount::builder("nobody-iost-test@example.invalid")
+            .anisette_provider(anisette)
+            .login("wrong-password", |_| async { Ok::<_, rootcause::Report>(isideload::auth::apple_account::TwoFactorCallbackResponse::Abort) })
+            .await;
+        let e = format!("{:?}", r.err().expect("must not log in"));
+        println!("{e}");
+        assert!(!e.contains("error sending request"), "{e}");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// Network: the latest release's app downloads and matches SHA256SUMS.
