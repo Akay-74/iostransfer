@@ -363,10 +363,8 @@ impl Installer {
             }
         };
         let session = DeveloperSession::from_account(&mut account).await.map_err(|e| anyhow!("{e}"))?;
-        if !from_keyring {
-            if !keyring_set(&email, &password).await {
-                println!("(Couldn't save the password in the system keyring; you'll be asked when the app needs renewing.)");
-            }
+        if !from_keyring && !keyring_set(&email, &password).await {
+            println!("(Couldn't save the password in the system keyring; you'll be asked when the app needs renewing.)");
         }
         self.state.lock().unwrap_or_else(|e| e.into_inner()).apple_id = Some(email.clone());
         self.save();
