@@ -13,6 +13,9 @@ pub struct AppState {
     pub dest: Option<PathBuf>,
     /// Apple ID used to sign the iPhone app (the password lives in the OS keyring).
     pub apple_id: Option<String>,
+    /// Anisette server that last worked for Apple sign-in.
+    #[serde(default)]
+    pub anisette: Option<String>,
     /// Firewall already set up (Linux ufw, which can't be checked without root).
     #[serde(default)]
     pub firewall_done: bool,
