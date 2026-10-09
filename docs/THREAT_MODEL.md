@@ -208,6 +208,28 @@ This is the most likely threat, so it's listed here even though it isn't adversa
 process at each crash point of PROTOCOL §10. After restarting, the interop test must reach the same final
 state with no `.part` leftovers and no ACK without a durable file.
 
+### T11 — The PC signs and installs the iPhone app (guided mode) → Apple ID, A5
+
+The guided mode (`iostransfer` with no arguments) signs the app with the user's free Apple ID and
+installs it over USB, then renews it every few days over USB or Wi‑Fi. That adds new secrets on the PC
+and a new way into the phone.
+
+- **N23 — Apple ID password:** stored only in the OS credential store (Windows Credential Manager, the
+  Secret Service keyring on Linux), never in a file. It is sent only to Apple: sign-in is SRP via
+  `isideload`, so the anisette helper server (`ani.stikstore.app`, which provides Apple's
+  device-attestation headers) never sees it. A failed sign-in deletes the stored password. A separate
+  Apple ID just for sideloading is recommended.
+- **N24 — Lockdown pairing records:** the iPhone's "Trust This Computer" record is copied to
+  `<config>/phones/<udid>.plist` (owner-only) for Wi‑Fi renewal. Whoever holds it can use the
+  phone's lockdown services on the LAN (install apps, read some device info), exactly like iTunes'
+  own copy. `<config>` must stay private (N16); "Settings → General → Transfer or Reset iPhone →
+  Reset Location & Privacy" on the iPhone revokes it.
+- **N25 — What gets installed:** release binaries embed the `.ipa` built by the same tagged CI run
+  (no download). Development builds download the latest release's `.ipa` over HTTPS and check it
+  against that release's `SHA256SUMS` (this catches corruption, not a compromised release).
+- **N26 — No renewal during a transfer:** installing restarts the app, so renewal runs only while no
+  session is open.
+
 ---
 
 ## 5. Requirements summary (for the backlog)
@@ -233,3 +255,4 @@ state with no `.part` leftovers and no ACK without a durable file.
 | N18–N20 | CI hardening, cargo-deny, pinned deps, SHA256SUMS | CI | M0–M1 |
 | N21 | `--insecure-dev` loopback-only | PC | M1 |
 | N22 | Crash-injection test | PC/CI | M1 |
+| N23–N26 | Apple ID in OS keyring, private pairing records, embedded .ipa, no renewal mid-transfer | PC | M7 |

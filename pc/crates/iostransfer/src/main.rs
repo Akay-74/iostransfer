@@ -19,18 +19,35 @@ use tokio::io::AsyncReadExt;
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, Semaphore};
 
+mod app;
+mod console;
+mod setup;
+mod sideload;
+mod state;
+
 const DEFAULT_PORT: u16 = 47800;
 const SERVICE_TYPE: &str = "_iostransfer._tcp.local.";
 const SINK_MAX_CONNS: usize = 16;
 
 #[derive(Parser)]
-#[command(name = "iostransfer", version, about = "Receive photos and videos from an iPhone")]
+#[command(
+    name = "iostransfer",
+    version,
+    about = "Receive photos and videos from an iPhone",
+    long_about = "Receive photos and videos from an iPhone.\n\nRun without a command (or double-click) for the guided mode: it sets up the firewall, installs the iPhone app over USB, pairs, receives, and renews the iPhone app before it expires."
+)]
 struct Cli {
     /// Config directory (default: the OS per-user config dir)
     #[arg(long, global = true)]
     config: Option<PathBuf>,
+    /// Guided mode: folder for photos and videos (remembered; default: Pictures/iPhone)
+    #[arg(long)]
+    dest: Option<PathBuf>,
+    /// Guided mode: port to receive on
+    #[arg(long, default_value_t = DEFAULT_PORT)]
+    port: u16,
     #[command(subcommand)]
-    cmd: Cmd,
+    cmd: Option<Cmd>,
 }
 
 #[derive(Subcommand)]
@@ -113,10 +130,36 @@ enum DevicesCmd {
     Revoke { device_id: String },
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    tracing_subscriber::fmt().with_target(false).init();
+fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
+    let guided = cli.cmd.is_none();
+    if guided && setup::relaunch_in_terminal() {
+        return std::process::ExitCode::SUCCESS;
+    }
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let _ = isideload::init();
+    // Guided mode keeps the window readable: library logs only for warnings.
+    let filter = if guided { "warn" } else { "info" };
+    tracing_subscriber::fmt()
+        .with_target(false)
+        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| filter.into()))
+        .init();
+    let result = tokio::runtime::Builder::new_multi_thread().enable_all().build().map_err(anyhow::Error::from).and_then(|rt| rt.block_on(run(cli)));
+    match result {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("Error: {e:#}");
+            if guided {
+                // A double-clicked window would close before the message can be read.
+                eprint!("Press Enter to close.");
+                let _ = std::io::stdin().read_line(&mut String::new());
+            }
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+async fn run(cli: Cli) -> Result<()> {
     let config = match cli.config {
         Some(c) => c,
         None => directories::ProjectDirs::from("io.github", "iostransfer", "iostransfer")
@@ -125,7 +168,10 @@ async fn main() -> Result<()> {
             .to_path_buf(),
     };
     create_private_dir(&config)?;
-    match cli.cmd {
+    let Some(cmd) = cli.cmd else {
+        return app::run(&config, cli.dest, cli.port).await;
+    };
+    match cmd {
         Cmd::Pair { dest, port, receive_port } => pair(&config, &dest, port, receive_port).await,
         Cmd::Receive {
             dest,
@@ -198,7 +244,7 @@ fn best_effort_private(path: &Path) {
     let _ = exists;
 }
 
-fn open_devices(config: &Path) -> Result<DeviceDb> {
+pub(crate) fn open_devices(config: &Path) -> Result<DeviceDb> {
     let path = config.join("devices.db");
     private_file(&path)?;
     Ok(DeviceDb::open(&path)?)
@@ -227,12 +273,12 @@ fn pc_id(config: &Path) -> Result<String> {
     Ok(id)
 }
 
-fn pc_name() -> String {
+pub(crate) fn pc_name() -> String {
     let name = gethostname::gethostname().to_string_lossy().into_owned();
     if name.is_empty() { "iostransfer-pc".into() } else { name }
 }
 
-fn build_ctx(
+pub(crate) fn build_ctx(
     config: &Path,
     dest: &Path,
     devices: DeviceDb,
@@ -262,7 +308,7 @@ fn build_ctx(
 }
 
 /// Addresses worth putting in the QR: private IPv4 on real adapters (no Docker, VM, VPN, link-local).
-fn lan_ips() -> Vec<IpAddr> {
+pub(crate) fn lan_ips() -> Vec<IpAddr> {
     const VIRTUAL: &[&str] =
         &["docker", "br-", "veth", "virbr", "vmnet", "vboxnet", "tun", "tap", "wg", "tailscale", "zt", "utun", "vethernet", "wsl", "hyper-v"];
     let mut ips: Vec<IpAddr> = if_addrs::get_if_addrs()
@@ -280,7 +326,7 @@ fn lan_ips() -> Vec<IpAddr> {
     ips
 }
 
-fn advertise(pc_id: &str, ips: &[IpAddr], port: u16) -> Result<mdns_sd::ServiceDaemon> {
+pub(crate) fn advertise(pc_id: &str, ips: &[IpAddr], port: u16) -> Result<mdns_sd::ServiceDaemon> {
     let daemon = mdns_sd::ServiceDaemon::new()?;
     let host: String = pc_name().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
     let info = mdns_sd::ServiceInfo::new(
@@ -295,7 +341,7 @@ fn advertise(pc_id: &str, ips: &[IpAddr], port: u16) -> Result<mdns_sd::ServiceD
     Ok(daemon)
 }
 
-fn print_qr(text: &str) -> Result<()> {
+pub(crate) fn print_qr(text: &str) -> Result<()> {
     let code = qrcode::QrCode::new(text.as_bytes())?;
     let img = code.render::<qrcode::render::unicode::Dense1x2>().quiet_zone(true).build();
     println!("{img}");
@@ -536,7 +582,7 @@ async fn sink<S: tokio::io::AsyncRead + Unpin>(mut s: S, n: u64, addr: std::net:
 }
 
 /// Minimal percent-encoding for the QR's `n` (PC name) parameter.
-fn percent_encode(s: &str) -> String {
+pub(crate) fn percent_encode(s: &str) -> String {
     s.bytes()
         .map(|b| match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => (b as char).to_string(),

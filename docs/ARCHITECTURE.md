@@ -409,12 +409,36 @@ Stored at `<dest>/.iostransfer/index.db`, next to the files, so moving the desti
 ### 4.5 CLI
 
 ```
+iostransfer                          # guided mode (double-click): see below
 iostransfer pair                     # QR code in terminal + PNG, waits for the phone
 iostransfer receive --dest PATH [--layout date|collection] [--sidecars] [--port 47800] [--paranoid]
 iostransfer devices | status | verify [--rehash]
 iostransfer receive --insecure-dev   # plaintext, localhost only: interop tests
 ```
 GUI (Tauri, same core crate) comes after the protocol is proven.
+
+**Guided mode** (no arguments, what a double-click runs; `app.rs`, `setup.rs`, `sideload.rs`):
+1. Linux without a terminal (started from a file manager): reopen itself in the first terminal
+   emulator found. Windows always gets a console window.
+2. Destination: `--dest`, else the remembered one, else `Pictures/iPhone` (`<config>/app.json`).
+3. Firewall: Windows adds the program rule through one UAC prompt (`ShellExecuteExW` "runas" →
+   `netsh`), checked on every start; Linux opens the port through `pkexec firewall-cmd`/`ufw` if
+   firewalld's list doesn't already cover it.
+4. One listener on 47800 both receives and pairs (the QR carries `p = rp = 47800`), so pairing works
+   while receiving and needs no second process.
+5. First run: install the iPhone app over USB (step 1), then show the pairing QR (step 2). Installing
+   uses `idevice` (usbmuxd; Windows gets Apple's driver via `winget install Apple.iTunes`, Linux via
+   `pkexec <package manager> install usbmuxd`) and `isideload` (Apple ID sign-in with 2FA, free
+   development certificate, re-sign with bundle ID `<ours>.<TEAMID>`, AFC upload,
+   installation_proxy). It then enables lockdown over Wi‑Fi (`EnableWifiConnections`), keeps a copy
+   of the pairing record, and reveals the Developer Mode switch (AMFI).
+6. Renewal: every minute while no session is open, phones signed ≥ 4 days ago are re-signed and
+   reinstalled over USB if plugged in, else over Wi‑Fi to their last address or any address a phone
+   recently connected from (only the matching phone accepts the pairing record). This replaces
+   SideStore + LocalDevVPN. The app shows a banner when ≤ 2 days are left (`AppExpiry`, from
+   `embedded.mobileprovision`).
+7. A one-line command menu: P pair another iPhone, I install/renew over USB, O open the folder,
+   D change folder, Q quit. One stdin reader serves prompts first, then the menu (`console.rs`).
 
 ### 4.6 Platform notes
 
@@ -440,7 +464,9 @@ GUI (Tauri, same core crate) comes after the protocol is proven.
   pc.yml     matrix ubuntu + windows: cargo build --release → artifacts (+ Inno Setup on Windows)
 ```
 - The repo must be public (unlimited standard runner minutes; private repos get ~200 macOS minutes a month).
-- **Recommended install path (Linux or Windows)**: `iloader` (github.com/nab138/iloader, RPM for Nobara, needs
+- **Recommended install path (Linux or Windows)**: double-click the PC program; its guided mode
+  installs and renews the app itself (§4.5). Release binaries embed the `.ipa` from the same tag.
+- **Alternative**: `iloader` (github.com/nab138/iloader, RPM for Nobara, needs
   the `usbmuxd` + `fuse` packages) over USB once → installs **SideStore** and writes the pairing file →
   SideStore installs our `.ipa` from the GitHub Release URL and **refreshes it on the phone every week over
   Wi‑Fi via LocalDevVPN** (no PC trip). Fallback: iloader direct install, repeated weekly.
@@ -482,3 +508,4 @@ GUI (Tauri, same core crate) comes after the protocol is proven.
 - **M4** Videos tab and lanes, resume after a kill, Move with VERIFY + batch delete (R4).
 - **M5** Thermal handling, experimental background mode (R5), polish, onboarding.
 - **M6** USB via usbmuxd, Tauri GUI.
+- **M7** Guided mode: double-click setup, USB install and automatic renewal of the iPhone app from the PC.

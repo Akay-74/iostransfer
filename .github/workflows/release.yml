@@ -1,5 +1,6 @@
-# Tag v* → GitHub Release with iostransfer (Linux), iostransfer.exe (Windows), IOStransfer.ipa and
-# SHA256SUMS (THREAT_MODEL N20). Actions pinned to commit SHAs (N18).
+# Tag v* → GitHub Release. The iPhone app is built first and embedded into the PC programs, so
+# the guided mode can install it over USB with no download (THREAT_MODEL N20: SHA256SUMS).
+# Actions pinned to commit SHAs (N18).
 name: release
 
 on:
@@ -10,33 +11,6 @@ permissions:
   contents: read
 
 jobs:
-  pc:
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-latest
-            bin: iostransfer
-            asset: iostransfer-linux-x86_64
-          - os: windows-latest
-            bin: iostransfer.exe
-            asset: iostransfer-windows-x86_64.exe
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
-        with:
-          toolchain: stable
-      - name: Build
-        working-directory: pc
-        run: cargo build --release --locked -p iostransfer
-      - name: Rename
-        shell: bash
-        run: cp "pc/target/release/${{ matrix.bin }}" "${{ matrix.asset }}"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: ${{ matrix.asset }}
-          path: ${{ matrix.asset }}
-
   ipa:
     runs-on: macos-latest
     steps:
@@ -57,6 +31,51 @@ jobs:
           name: IOStransfer.ipa
           path: IOStransfer.ipa
 
+  pc:
+    needs: ipa
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            bin: iostransfer
+            asset: iostransfer-linux-x86_64
+          - os: windows-latest
+            bin: iostransfer.exe
+            asset: IOStransfer-windows-x86_64.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          toolchain: stable
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: IOStransfer.ipa
+          path: ipa
+      - name: Build (iPhone app embedded)
+        working-directory: pc
+        shell: bash
+        run: |
+          export IOST_EMBED_IPA="$GITHUB_WORKSPACE/ipa/IOStransfer.ipa"
+          test -s "$IOST_EMBED_IPA"
+          cargo build --release --locked -p iostransfer
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p out
+          cp "pc/target/release/${{ matrix.bin }}" "out/${{ matrix.asset }}"
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            # A tarball keeps the executable bit, so the extracted program runs on double-click.
+            mkdir -p IOStransfer
+            cp pc/target/release/iostransfer IOStransfer/iostransfer
+            chmod +x IOStransfer/iostransfer
+            tar -czf out/IOStransfer-linux-x86_64.tar.gz IOStransfer
+          fi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pc-${{ runner.os }}
+          path: out/*
+
   publish:
     needs: [pc, ipa]
     runs-on: ubuntu-latest
@@ -74,4 +93,4 @@ jobs:
           cd dist
           sha256sum * > SHA256SUMS
           gh release create "${GITHUB_REF_NAME}" * --repo "${GITHUB_REPOSITORY}" --title "IOStransfer ${GITHUB_REF_NAME}" \
-            --notes "Unsigned builds. iPhone: install IOStransfer.ipa with SideStore (see README). PC: run iostransfer pair, then iostransfer receive."
+            --notes "Windows: download IOStransfer-windows-x86_64.exe and double-click it. Linux: download IOStransfer-linux-x86_64.tar.gz, extract, double-click iostransfer. It sets up the firewall, installs the iPhone app over USB with your free Apple ID, pairs, and keeps the app renewed. IOStransfer.ipa is included for SideStore users."

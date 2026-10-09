@@ -38,6 +38,17 @@ struct HomeView: View {
                     Button { settings = true } label: { Image(systemName: "gear") }
                 }
             }
+            .safeAreaInset(edge: .top) {
+                if let days = AppExpiry.daysLeft, days <= 2 {
+                    Text(days < 1
+                         ? "IOStransfer stops opening within a day. Open IOStransfer on your PC with this iPhone on the same Wi‑Fi (or plugged in) to renew it."
+                         : "IOStransfer stops opening in \(days) days. Open IOStransfer on your PC with this iPhone on the same Wi‑Fi (or plugged in) to renew it.")
+                        .font(.footnote)
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.orange.opacity(0.2))
+                }
+            }
             .safeAreaInset(edge: .bottom) {
                 HStack {
                     Text(selectedCount == 0 ? "Nothing selected" : "\(selectedCount) selected")

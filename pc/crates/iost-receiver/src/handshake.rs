@@ -136,6 +136,8 @@ pub struct Established<S> {
     pub session_id: String,
     /// True when this session was a pairing (the device was just added).
     pub newly_paired: bool,
+    /// The phone's IP address, as seen by the listener.
+    pub peer: String,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -249,7 +251,7 @@ where
     match result {
         Err(_) => hs.fail_timeout().await,
         Ok(Err(e)) => Err(e),
-        Ok(Ok(())) => Ok(Established { framed: hs.framed, proto, device_id, device_name, session_id, newly_paired }),
+        Ok(Ok(())) => Ok(Established { framed: hs.framed, proto, device_id, device_name, session_id, newly_paired, peer: peer.to_string() }),
     }
 }
 
