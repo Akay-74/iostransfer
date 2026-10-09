@@ -343,24 +343,24 @@ impl Installer {
             }
         };
         let anisette_dir = self.config.join("anisette");
-        std::fs::create_dir_all(&anisette_dir)?;
-        let anisette = RemoteV3AnisetteProvider::default()
-            .map_err(|e| anyhow!("{e}"))?
-            .set_storage(Box::new(FsStorage::new(anisette_dir)));
+        let preferred = self.state.lock().unwrap_or_else(|e| e.into_inner()).anisette.clone();
         let console = self.console.clone();
         let two_factor = move |p: TwoFactorCallbackParams| {
             let console = console.clone();
             async move { Ok::<_, Report>(ask_two_factor(&console, p).await) }
         };
-        let mut account = match AppleAccount::builder(&email).anisette_provider(anisette).login(&password, two_factor).await {
-            Ok(a) => a,
-            Err(e) => {
-                let detail = format!("{e:?}");
-                if detail.contains("error sending request") || detail.contains("provisioning socket") {
-                    // A network problem, not the password: say which server and why.
-                    diagnose_network().await;
-                    bail!("couldn't reach Apple's sign-in servers (details above)");
-                }
+        let mut account = match sign_in(&email, &password, &anisette_dir, preferred.as_deref(), two_factor).await {
+            Ok((a, server)) => {
+                self.state.lock().unwrap_or_else(|e| e.into_inner()).anisette = Some(server);
+                a
+            }
+            Err(SignInError::Network(detail)) => {
+                // Not the password: say which server and why.
+                tracing::debug!("sign-in network failure: {detail}");
+                diagnose_network().await;
+                bail!("couldn't reach Apple's sign-in servers (details above)");
+            }
+            Err(SignInError::Rejected(e)) => {
                 if from_keyring {
                     // Probably a changed password: forget it, ask next time.
                     keyring_delete(&email).await;
@@ -418,16 +418,67 @@ pub fn embedded_ipa_sha256() -> Option<String> {
     None
 }
 
+/// Public anisette servers (SideStore's list): Apple's sign-in needs the device-attestation headers
+/// they generate. Any one may be down, so try them in turn.
+const ANISETTE_SERVERS: &[&str] = &[
+    isideload::anisette::remote_v3::DEFAULT_ANISETTE_V3_URL,
+    "https://ani.sidestore.io",
+    "https://ani.sidestore.app",
+    "https://ani.sidestore.zip",
+    "https://ani.846969.xyz",
+];
+
+pub enum SignInError {
+    /// Couldn't talk to Apple or any anisette server.
+    Network(String),
+    /// Apple answered and said no (password, 2FA, locked account…).
+    Rejected(String),
+}
+
+/// Sign in, trying each anisette server (the last good one first) until one works. A failure before
+/// Apple sees the password (anisette) moves on to the next server; Apple's own answer ends it.
+pub async fn sign_in<C>(email: &str, password: &str, anisette_dir: &Path, preferred: Option<&str>, two_factor: C) -> Result<(AppleAccount, String), SignInError>
+where
+    C: isideload::util::callbacks::TwoFactorCallback + Clone + 'static,
+{
+    std::fs::create_dir_all(anisette_dir).map_err(|e| SignInError::Network(e.to_string()))?;
+    let mut servers: Vec<&str> = preferred.into_iter().collect();
+    servers.extend(ANISETTE_SERVERS.iter().filter(|s| Some(**s) != preferred));
+    let mut last = String::new();
+    for server in servers {
+        for _attempt in 0..2 {
+            let anisette = RemoteV3AnisetteProvider::new(server, Box::new(FsStorage::new(anisette_dir.to_path_buf())), "0".into())
+                .map_err(|e| SignInError::Network(format!("{e:?}")))?;
+            match AppleAccount::builder(email).anisette_provider(anisette).login(password, two_factor.clone()).await {
+                Ok(a) => return Ok((a, server.to_string())),
+                Err(e) => {
+                    let detail = format!("{e:?}");
+                    let anisette_failed = ["anisette", "provision", "Provision", "Handshake", "WebSocket", "websocket"].iter().any(|k| detail.contains(k));
+                    if anisette_failed {
+                        tracing::info!("anisette server {server} failed, trying another");
+                        last = detail;
+                        continue;
+                    }
+                    if detail.contains("error sending request") {
+                        return Err(SignInError::Network(detail));
+                    }
+                    return Err(SignInError::Rejected(format!("{e}")));
+                }
+            }
+        }
+    }
+    Err(SignInError::Network(last))
+}
+
 /// Explain a failed connection to Apple's sign-in server or the anisette helper.
 async fn diagnose_network() {
-    let client = match reqwest::Client::builder().timeout(Duration::from_secs(15)).build() {
+    // Reachability only (nothing is sent): gsa.apple.com's private Apple root isn't in any OS store.
+    let client = match reqwest::Client::builder().timeout(Duration::from_secs(15)).danger_accept_invalid_certs(true).build() {
         Ok(c) => c,
         Err(e) => return println!("Can't make HTTPS connections: {}", error_chain(&e)),
     };
-    let servers = [
-        ("Apple's sign-in server", "https://gsa.apple.com/grandslam/GsService2/lookup"),
-        ("the anisette helper", isideload::anisette::remote_v3::DEFAULT_ANISETTE_V3_URL),
-    ];
+    let mut servers = vec![("Apple's sign-in server", "https://gsa.apple.com/grandslam/GsService2/lookup")];
+    servers.extend(ANISETTE_SERVERS.iter().map(|u| ("anisette helper", *u)));
     let mut failed = false;
     for (what, url) in servers {
         match client.get(url).send().await {
@@ -570,16 +621,12 @@ mod tests {
         let _ = isideload::init();
         let dir = std::env::temp_dir().join(format!("iost-ani-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let anisette = isideload::anisette::remote_v3::RemoteV3AnisetteProvider::default()
-            .unwrap()
-            .set_storage(Box::new(isideload::util::fs_storage::FsStorage::new(dir.clone())));
-        let r = isideload::auth::apple_account::AppleAccount::builder("nobody-iost-test@example.invalid")
-            .anisette_provider(anisette)
-            .login("wrong-password", |_| async { Ok::<_, rootcause::Report>(isideload::auth::apple_account::TwoFactorCallbackResponse::Abort) })
-            .await;
-        let e = format!("{:?}", r.err().expect("must not log in"));
-        println!("{e}");
-        assert!(!e.contains("error sending request"), "{e}");
+        let abort = |_| async { Ok::<_, rootcause::Report>(isideload::auth::apple_account::TwoFactorCallbackResponse::Abort) };
+        match super::sign_in("nobody-iost-test@example.invalid", "wrong-password", &dir, None, abort).await {
+            Ok(_) => panic!("must not log in"),
+            Err(super::SignInError::Network(d)) => panic!("network: {d}"),
+            Err(super::SignInError::Rejected(e)) => assert!(e.contains("-20101") || e.contains("incorrectly"), "{e}"),
+        }
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

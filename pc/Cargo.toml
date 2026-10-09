@@ -5,3 +5,7 @@ members = ["crates/iost-proto", "crates/iost-receiver", "crates/iostransfer"]
 [workspace.package]
 edition = "2024"
 license = "MIT"
+
+# Apple sign-in TLS fix, see vendor/isideload/PATCHED.md
+[patch.crates-io]
+isideload = { path = "vendor/isideload" }
