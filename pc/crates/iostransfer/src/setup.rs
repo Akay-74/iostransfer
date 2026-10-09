@@ -2,7 +2,9 @@
 //! Apple's USB service, opening folders.
 
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Command;
+#[cfg(unix)]
+use std::process::Stdio;
 
 use crate::console::Console;
 
@@ -173,6 +175,7 @@ fn output(cmd: &str, args: &[&str]) -> String {
         .unwrap_or_default()
 }
 
+#[cfg_attr(windows, allow(dead_code))]
 /// Does a firewalld `--list-ports` line ("1025-65535/tcp 47800/tcp …") cover `port`/tcp?
 pub fn port_listed(list: &str, port: u16) -> bool {
     list.split_whitespace().any(|e| {
